@@ -83,4 +83,43 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
+
+pkg_tar(
+    name = "dist",
+    extension = "tar.gz",
+    srcs = [
+        "//xls/tools:wrap_io_main",
+        "//xls/tools:solver",
+        "//xls/tools:smtlib_emitter_main",
+        "//xls/tools:simulate_module_main",
+        "//xls/tools:repl",
+        "//xls/tools:proto_to_dslx_main",
+        "//xls/tools:parse_ir",
+        "//xls/tools:netlist_interpreter_main",
+        "//xls/tools:llvm_main_generator",
+        "//xls/tools:lec_main",
+        "//xls/tools:ir_stats_main",
+        "//xls/tools:ir_minimizer_main",
+        "//xls/tools:opt_main",
+        "//xls/tools:extract_stage_main",
+        "//xls/tools:eval_proc_main",
+        "//xls/tools:eval_ir_main",
+        "//xls/tools:drpc_main",
+        "//xls/tools:delay_info_main",
+        "//xls/tools:codegen_main",
+        "//xls/tools:check_ir_equivalence_main",
+        "//xls/tools:cell_library_extract_formula",
+        "//xls/tools:booleanify_main",
+        "//xls/tools:benchmark_main",
+        "//xls/tools:bdd_stats",
+        "//xls/dslx:typecheck_main",
+        "//xls/dslx:ir_converter_main",
+        "//xls/dslx:interpreter_main",
+        "//xls/dslx:highlight_main",
+        "//xls/dslx:cpp_transpiler_main",
+    ],
+    package_dir = "/xls-tools-dist"
+)
+
 exports_files(["LICENSE"])
