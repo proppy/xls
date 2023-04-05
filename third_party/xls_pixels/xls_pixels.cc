@@ -14,6 +14,7 @@
 
 #include <filesystem>
 #include <vector>
+#include <fstream>
 
 #include "absl/flags/flag.h"
 #include "absl/status/status.h"
@@ -33,15 +34,20 @@
 #include "xls/dslx/parse_and_typecheck.h"
 
 const char kUsage[] = R"(
+Evaluate a DSLX file implementing a pixel color function (returnining an ARGB color for a given pixel coordinate) and dump result into a raw texture file.
+
+   Examples:
    xls_pixels DSLX_FILE
 )";
 
-ABSL_FLAG(std::string, entry, "main", "Entry function to test. Must be specified.");
+ABSL_FLAG(std::string, entry, "main", "Entry function to evaluate.");
+ABSL_FLAG(std::string, output_path, "texture.raw", "Output file.");
 
 namespace xls {
 
 absl::Status RealMain(
     std::filesystem::path dslx_path,
+    std::filesystem::path texture_path,
     std::string_view entry_fn_name) {
   dslx::ImportData import_data(
       dslx::CreateImportData(kDefaultDslxStdlibPath, {}));
@@ -59,6 +65,7 @@ absl::Status RealMain(
                        dslx::BytecodeEmitter::Emit(&import_data, tm.type_info,
                                                    f, std::nullopt));
 
+  std::ofstream ofs(texture_path);
   for (uint32_t y = 0; y < 240; ++y) {
     for (uint32_t x = 0; x < 320; ++x) {
       std::vector<dslx::InterpValue> args = {
@@ -69,7 +76,7 @@ absl::Status RealMain(
           dslx::InterpValue result,
           dslx::BytecodeInterpreter::Interpret(&import_data, bf.get(), args));
       for (dslx::InterpValue value : result.GetValuesOrDie()) {
-        std::cout << value.GetBitsOrDie().ToBytes()[0];
+        ofs << value.GetBitsOrDie().ToBytes()[0];
       }
     }
   }
@@ -85,8 +92,9 @@ int main(int argc, char* argv[]) {
       "Expected invocation: %s <DSLX path>", argv[0]);
 
   std::string entry_fn_name = absl::GetFlag(FLAGS_entry);
+  std::string output_path = absl::GetFlag(FLAGS_output_path);
   XLS_QCHECK_OK(xls::RealMain(positional_arguments[0],
+                              output_path,
                               entry_fn_name));
-
   return 0;
 }
