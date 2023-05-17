@@ -37,7 +37,6 @@
 #include "xls/dslx/type_system/parametric_env.h"
 #include "xls/ir/function.h"
 #include "xls/ir/package.h"
-#include "xls/jit/function_jit.h"
 
 namespace xls::dslx {
 
@@ -66,21 +65,7 @@ class RunComparator {
                              const ParametricEnv* parametric_env,
                              const InterpValue& got);
 
-  // Returns the cached or newly-compiled jit function for ir_name.  ir_name has
-  // already been mangled (see MangleDslxName) so it should be unique in the
-  // program and is used as the cache key.
-  //
-  // Note: There is no locking in jit compilation or on the jit function cache
-  // so this function is *not* thread-safe.
-  absl::StatusOr<FunctionJit*> GetOrCompileJitFunction(
-      std::string ir_name, xls::Function* ir_function);
-
  private:
-  XLS_FRIEND_TEST(RunRoutinesTest, TestInvokedFunctionDoesJit);
-  XLS_FRIEND_TEST(RunRoutinesTest, QuickcheckInvokedFunctionDoesJit);
-  XLS_FRIEND_TEST(RunRoutinesTest, NoSeedStillQuickChecks);
-
-  absl::flat_hash_map<std::string, std::unique_ptr<FunctionJit>> jit_cache_;
   CompareMode mode_;
 };
 
@@ -129,24 +114,6 @@ absl::StatusOr<TestResult> ParseAndTest(std::string_view program,
                                         std::string_view module_name,
                                         std::string_view filename,
                                         const ParseAndTestOptions& options);
-
-struct QuickCheckResults {
-  std::vector<std::vector<Value>> arg_sets;
-  std::vector<Value> results;
-};
-
-// JIT-compiles the given xls_function and invokes it with num_tests randomly
-// generated arguments -- returns `([argset, ...], [results, ...])` (i.e. in
-// structure-of-array style).
-//
-// xls_function is a predicate we're trying to find evidence to falsify, so if
-// this finds an example that falsifies the predicate, we early-return (i.e. the
-// length of the returned vectors may be < 1000).
-absl::StatusOr<QuickCheckResults> DoQuickCheck(xls::Function* xls_function,
-                                               std::string ir_name,
-                                               RunComparator* run_comparator,
-                                               int64_t seed, int64_t num_tests);
-
 }  // namespace xls::dslx
 
 #endif  // XLS_DSLX_RUN_ROUTINES_H_

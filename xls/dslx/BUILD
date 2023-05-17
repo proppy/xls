@@ -435,7 +435,6 @@ cc_library(
         "//xls/interpreter:ir_interpreter",
         "//xls/interpreter:random_value",
         "//xls/ir",
-        "//xls/jit:function_jit",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/status",

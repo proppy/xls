@@ -130,19 +130,6 @@ absl::Status RunTestProc(ImportData* import_data, TypeInfo* type_info,
 
 }  // namespace
 
-absl::StatusOr<FunctionJit*> RunComparator::GetOrCompileJitFunction(
-    std::string ir_name, xls::Function* ir_function) {
-  auto it = jit_cache_.find(ir_name);
-  if (it != jit_cache_.end()) {
-    return it->second.get();
-  }
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<FunctionJit> jit,
-                       FunctionJit::Create(ir_function));
-  FunctionJit* result = jit.get();
-  jit_cache_[ir_name] = std::move(jit);
-  return result;
-}
-
 absl::Status RunComparator::RunComparison(Package* ir_package,
                                           bool requires_implicit_token,
                                           const dslx::Function* f,
@@ -186,15 +173,6 @@ absl::Status RunComparator::RunComparison(Package* ir_package,
   const char* mode_str = nullptr;
   Value ir_result;
   switch (mode_) {
-    case CompareMode::kJit: {  // Compare to IR JIT.
-      // TODO(https://github.com/google/xls/issues/506): Also compare events
-      // once the DSLX interpreter supports them (and the JIT supports traces).
-      XLS_ASSIGN_OR_RETURN(FunctionJit * jit,
-                           GetOrCompileJitFunction(ir_name, ir_function));
-      XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(jit->Run(ir_args)));
-      mode_str = "JIT";
-      break;
-    }
     case CompareMode::kInterpreter: {  // Compare to IR interpreter.
       XLS_ASSIGN_OR_RETURN(ir_result, DropInterpreterEvents(InterpretFunction(
                                           ir_function, ir_args)));
@@ -235,122 +213,6 @@ static bool TestMatchesFilter(std::string_view test_name,
   }
   // TODO(leary): 2019-08-28 Implement wildcards.
   return test_name == *test_filter;
-}
-
-absl::StatusOr<QuickCheckResults> DoQuickCheck(xls::Function* xls_function,
-                                               std::string ir_name,
-                                               RunComparator* run_comparator,
-                                               int64_t seed,
-                                               int64_t num_tests) {
-  XLS_ASSIGN_OR_RETURN(FunctionJit * jit,
-                       run_comparator->GetOrCompileJitFunction(
-                           std::move(ir_name), xls_function));
-
-  QuickCheckResults results;
-  std::minstd_rand rng_engine(seed);
-
-  for (int i = 0; i < num_tests; i++) {
-    results.arg_sets.push_back(
-        RandomFunctionArguments(xls_function, &rng_engine));
-    // TODO(https://github.com/google/xls/issues/506): 2021-10-15
-    // Assertion failures should work out, but we should consciously decide
-    // if/how we want to dump traces when running QuickChecks (always, for
-    // failures, flag-controlled, ...).
-    XLS_ASSIGN_OR_RETURN(
-        xls::Value result,
-        DropInterpreterEvents(jit->Run(results.arg_sets.back())));
-    results.results.push_back(result);
-    if (result.IsAllZeros()) {
-      // We were able to falsify the xls_function (predicate), bail out early
-      // and present this evidence.
-      break;
-    }
-  }
-
-  return results;
-}
-
-static absl::Status RunQuickCheck(RunComparator* run_comparator,
-                                  Package* ir_package, QuickCheck* quickcheck,
-                                  TypeInfo* type_info, int64_t seed) {
-  Function* fn = quickcheck->f();
-  XLS_ASSIGN_OR_RETURN(std::string ir_name,
-                       MangleDslxName(fn->owner()->name(), fn->identifier(),
-                                      CallingConvention::kTypical,
-                                      fn->GetFreeParametricKeySet()));
-  XLS_ASSIGN_OR_RETURN(xls::Function * ir_function,
-                       ir_package->GetFunction(ir_name));
-
-  XLS_ASSIGN_OR_RETURN(
-      QuickCheckResults qc_results,
-      DoQuickCheck(ir_function, std::move(ir_name), run_comparator, seed,
-                   quickcheck->test_count()));
-  const auto& [arg_sets, results] = qc_results;
-  XLS_ASSIGN_OR_RETURN(Bits last_result, results.back().GetBitsWithStatus());
-  if (!last_result.IsZero()) {
-    // Did not find a falsifying example.
-    return absl::OkStatus();
-  }
-
-  const std::vector<Value>& last_argset = arg_sets.back();
-  XLS_ASSIGN_OR_RETURN(FunctionType * fn_type,
-                       type_info->GetItemAs<FunctionType>(fn));
-  const std::vector<std::unique_ptr<ConcreteType>>& params = fn_type->params();
-
-  std::vector<InterpValue> dslx_argset;
-  for (int64_t i = 0; i < params.size(); ++i) {
-    const ConcreteType& arg_type = *params[i];
-    const Value& value = last_argset[i];
-    XLS_ASSIGN_OR_RETURN(InterpValue interp_value,
-                         ValueToInterpValue(value, &arg_type));
-    dslx_argset.push_back(interp_value);
-  }
-  std::string dslx_argset_str = absl::StrJoin(
-      dslx_argset, ", ", [](std::string* out, const InterpValue& v) {
-        absl::StrAppend(out, v.ToString());
-      });
-  return FailureErrorStatus(
-      fn->span(),
-      absl::StrFormat("Found falsifying example after %d tests: [%s]",
-                      results.size(), dslx_argset_str));
-}
-
-using HandleError = const std::function<void(
-    const absl::Status&, std::string_view test_name, bool is_quickcheck)>;
-
-static absl::Status RunQuickChecksIfJitEnabled(
-    Module* entry_module, TypeInfo* type_info, RunComparator* run_comparator,
-    Package* ir_package, std::optional<int64_t> seed,
-    const HandleError& handle_error) {
-  if (run_comparator == nullptr) {
-    std::cerr << "[ SKIPPING QUICKCHECKS  ] (JIT is disabled)" << std::endl;
-    return absl::OkStatus();
-  }
-  if (!seed.has_value()) {
-    // Note: we *want* to *provide* non-determinism by default. See
-    // https://abseil.io/docs/cpp/guides/random#stability-of-generated-sequences
-    // for rationale.
-    seed = static_cast<int64_t>(getpid()) * static_cast<int64_t>(time(nullptr));
-  }
-  std::cerr << absl::StreamFormat("[ SEED %*d ]", kQuickcheckSpaces + 1, *seed)
-            << std::endl;
-  for (QuickCheck* quickcheck : entry_module->GetQuickChecks()) {
-    const std::string& test_name = quickcheck->identifier();
-    std::cerr << "[ RUN QUICKCHECK        ] " << test_name
-              << " count: " << quickcheck->test_count() << std::endl;
-    absl::Status status =
-        RunQuickCheck(run_comparator, ir_package, quickcheck, type_info, *seed);
-    if (!status.ok()) {
-      handle_error(status, test_name, /*is_quickcheck=*/true);
-    } else {
-      std::cerr << "[                    OK ] " << test_name << std::endl;
-    }
-  }
-  std::cerr << absl::StreamFormat(
-                   "[=======================] %d quickcheck(s) ran.",
-                   entry_module->GetQuickChecks().size())
-            << std::endl;
-  return absl::OkStatus();
 }
 
 absl::StatusOr<TestResult> ParseAndTest(std::string_view program,
@@ -485,13 +347,6 @@ absl::StatusOr<TestResult> ParseAndTest(std::string_view program,
                    "[===============] %d test(s) ran; %d failed; %d skipped.",
                    ran, failed, skipped)
             << std::endl;
-
-  // Run quickchecks, but only if the JIT is enabled.
-  if (!entry_module->GetQuickChecks().empty()) {
-    XLS_RETURN_IF_ERROR(RunQuickChecksIfJitEnabled(
-        entry_module, tm_or.value().type_info, options.run_comparator,
-        ir_package.get(), options.seed, handle_error));
-  }
 
   return failed == 0 ? TestResult::kAllPassed : TestResult::kSomeFailed;
 }
