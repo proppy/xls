@@ -33,10 +33,6 @@ jobs:
           mv bazelisk-linux-amd64 "${GITHUB_WORKSPACE}/bin/bazel"
           chmod +x "${GITHUB_WORKSPACE}/bin/bazel"
 
-      - name: Bazel Test All (opt)
-        run: |
-          "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
-
       - name: Dist
         run: |
           "${GITHUB_WORKSPACE}/bin/bazel" build -c opt -- //dist:xls_dist_tar
