@@ -40,3 +40,5 @@ jobs:
       - name: Bazel Test All (opt)
         run: |
           "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
+      - name: Release
+        uses: softprops/action-gh-release@v1
