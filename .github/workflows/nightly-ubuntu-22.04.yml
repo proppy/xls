@@ -43,12 +43,12 @@ jobs:
 
       - name: Dist
         run: |
-	  VERSION=${{github.run_id}}
+	  VERSION=${{ github.run_id }}
           "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=${VERSION} --//dist:os=ubuntu_22.04  --//dist:arch=x86_64 -- //dist:xls_dist_tar
-	  echo "VERSION=${VERSION}" >> $GITHUB_ENV
+	  echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
-          files: bazel-bin/dist/xls-${ env.VERSION }-ubuntu-22.04-x86_64.tar.gz
-	  tag_name: ${ env.VERSION }
+          files: bazel-bin/dist/xls-${{ env.VERSION }}-ubuntu-22.04-x86_64.tar.gz
+	  tag_name: ${{ env.VERSION }}
