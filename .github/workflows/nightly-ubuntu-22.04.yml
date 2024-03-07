@@ -37,7 +37,7 @@ jobs:
 
       - name: Dist
         run: |
-          VERSION=$(git describe --match=v* --tags)
+          VERSION=$(git describe --match=v*)
           "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=$VERSION --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
