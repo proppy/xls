@@ -17,29 +17,29 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: actions/cache@v3
-        with:
-          path: "~/.cache/bazel"
-          # Create/use a cache called bazel-cache-22_04-<commit hash>
-          # and read the latest cache with prefix bazel-cache-22_04-
-          # if it doesn't already exist.
-          key: bazel-cache-22_04-${{ github.sha }}
-          restore-keys: bazel-cache-22_04-
+	with:
+	  path: "~/.cache/bazel"
+	  # Create/use a cache called bazel-cache-22_04-<commit hash>
+	  # and read the latest cache with prefix bazel-cache-22_04-
+	  # if it doesn't already exist.
+	  key: bazel-cache-22_04-${{ github.sha }}
+	  restore-keys: bazel-cache-22_04-
       - name: Install dependencies via apt
-        run: sudo apt-get install python3-distutils python3-dev python-is-python3 libtinfo5  build-essential liblapack-dev libblas-dev gfortran
+	run: sudo apt-get install python3-distutils python3-dev python-is-python3 libtinfo5  build-essential liblapack-dev libblas-dev gfortran
       - name: Install bazelisk
-        run: |
-          curl -LO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64"
-          mkdir -p "${GITHUB_WORKSPACE}/bin/"
-          mv bazelisk-linux-amd64 "${GITHUB_WORKSPACE}/bin/bazel"
-          chmod +x "${GITHUB_WORKSPACE}/bin/bazel"
+	run: |
+	  curl -LO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64"
+	  mkdir -p "${GITHUB_WORKSPACE}/bin/"
+	  mv bazelisk-linux-amd64 "${GITHUB_WORKSPACE}/bin/bazel"
+	  chmod +x "${GITHUB_WORKSPACE}/bin/bazel"
 
       - name: Dist
-        run: |
-          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt -- //dist:xls_dist_tar
+	run: |
+	  "${GITHUB_WORKSPACE}/bin/bazel" build -c opt -- //dist:xls_dist_tar
 
       - name: Release
         uses: softprops/action-gh-release@v1
 	with:
 	  tag_name: ${{ github.run_id }}
-          files: |
+	  files: |
 	    bazel-bin/dist/xls-*
