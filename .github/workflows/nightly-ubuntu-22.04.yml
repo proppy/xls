@@ -35,10 +35,12 @@ jobs:
 
       - name: Dist
         run: |
-          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt -- //dist:xls_dist_tar
+          VERSION=$(git describe --match=v*)
+          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=$VERSION --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.run_id }}
+          tag_name: ${{ env.VERSION }}
           files: bazel-bin/dist/xls-*.*
