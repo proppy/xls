@@ -13,7 +13,7 @@ jobs:
   build:
     name: Nightly Ubuntu 22.04
     runs-on:
-      labels: ubuntu-22.04-64core
+      labels: ubuntu-22.04
     steps:
       - uses: actions/checkout@v2
       - uses: actions/cache@v3
@@ -42,6 +42,12 @@ jobs:
           "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
       - name: Dist
         run: |
-          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=0.0.0 --//dist:os=ubuntu_22.04  --//dist:arch=x86_64 -- //dist:xls_dist_tar
+	  VERSION="$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)"
+          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=${VERSION} --//dist:os=ubuntu_22.04  --//dist:arch=x86_64 -- //dist:xls_dist_tar
+	  echo "VERSION=${VERSION}" >> $GITHUB_ENV
+	
       - name: Release
         uses: softprops/action-gh-release@v1
+        with:
+          files: bazel-bin/dist/xls-${ env.VERSION }-ubuntu-22.04-x86_64.tar.gz
+	  tag_name: ${ env.VERSION }
