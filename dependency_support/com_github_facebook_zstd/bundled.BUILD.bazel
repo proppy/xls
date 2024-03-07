@@ -16,6 +16,8 @@ package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
+exports_files(["LICENSE"])
+
 # Builds everything together similarly to the zstd cmake file:
 # https://github.com/facebook/zstd/blob/dev/build/cmake/lib/CMakeLists.txt
 # but with legacy support and defines as in the zstd BUCK file:

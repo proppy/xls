@@ -169,10 +169,10 @@ def load_external_repositories():
     # a working BUILD file.
     http_archive(
         name = "zlib",
-        sha256 = "f5cc4ab910db99b2bdbba39ebbdc225ffc2aa04b4057bc2817f1b94b6978cfc3",
-        strip_prefix = "zlib-1.2.11",
+        sha256 = "50b24b47bf19e1f35d2a21ff36d2a366638cdf958219a66f30ce0861201760e6",
+        strip_prefix = "zlib-1.3.1",
         urls = [
-            "https://github.com/madler/zlib/archive/v1.2.11.zip",
+            "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.zip",
         ],
         build_file = "@com_google_xls//dependency_support/zlib:bundled.BUILD.bazel",
     )
@@ -196,6 +196,9 @@ def load_external_repositories():
             "@local_config_python": "@python39",
             "@system_python": "@python39",
         },
+        patches = [
+            "@com_google_xls//dependency_support/com_github_grpc_grpc:add_cares_license.patch",
+	],
     )
 
     # Used by xlscc.
@@ -231,6 +234,7 @@ def load_external_repositories():
             "@com_google_xls//dependency_support/com_google_ortools:0001-Fix-GLPK-Eigen-and-SCIP-deps.patch",
             "@com_google_xls//dependency_support/com_google_ortools:0002-Remove-duplicate-logtostderr-flag.patch",
         ],
+        build_file = "@com_google_xls//dependency_support/com_google_ortools:bundled.BUILD.bazel",	
     )
 
     http_archive(
@@ -249,13 +253,13 @@ def load_external_repositories():
         sha256 = "af47d1489234249e5490b068635f5aaf141e45a08e0a8a61195157db02e9b21f",
     )
 
-    # Updated 2023-2-1
+    # Updated 2023-2-22
     http_archive(
         name = "rules_license",
         urls = [
-            "https://github.com/bazelbuild/rules_license/releases/download/0.0.4/rules_license-0.0.4.tar.gz",
+            "https://github.com/bazelbuild/rules_license/releases/download/0.0.8/rules_license-0.0.8.tar.gz",
         ],
-        sha256 = "6157e1e68378532d0241ecd15d3c45f6e5cfd98fc10846045509fb2a7cc9e381",
+        sha256 = "241b06f3097fd186ff468832150d6cc142247dc42a32aaefb56d0099895fd229",
     )
 
     # 2022-09-19
@@ -296,4 +300,14 @@ def load_external_repositories():
         strip_prefix = "zstd-1.4.7",
         urls = ["https://github.com/facebook/zstd/releases/download/v1.4.7/zstd-1.4.7.tar.gz"],
         build_file = "@//dependency_support/com_github_facebook_zstd:bundled.BUILD.bazel",
+    )
+
+
+    # 2024-02-09
+    http_archive(
+	name = "rules_pkg",
+	urls = [
+	    "https://github.com/bazelbuild/rules_pkg/releases/download/0.10.1/rules_pkg-0.10.1.tar.gz",
+	],
+	sha256 = "d250924a2ecc5176808fc4c25d5cf5e9e79e6346d79d5ab1c493e289e722d1d0",
     )

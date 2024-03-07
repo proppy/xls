@@ -27,6 +27,7 @@ load("@rules_hdl//dependency_support:dependency_support.bzl", rules_hdl_dependen
 load("@rules_proto//proto:repositories.bzl", "rules_proto_dependencies", "rules_proto_toolchains")
 load("@rules_python//python:pip.bzl", "pip_parse")
 load("@rules_python//python:repositories.bzl", "py_repositories")
+load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 
 def initialize_external_repositories():
     """Calls set-up methods for external repositories that require that."""
@@ -49,3 +50,4 @@ def initialize_external_repositories():
     initialize_boost()
     initialize_llvm()
     bazel_compdb_deps()
+    rules_pkg_dependencies()
