@@ -1,0 +1,40 @@
+# https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions
+# See also: https://github.com/marketplace/actions/bazel-action
+
+name: Release Colab
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Release Colab
+    runs-on:
+      labels: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0 # so that git-describe can find previous tags
+
+      - name: Install dependencies via apt
+        run: sudo apt-get install python3-distutils python3-dev python-is-python3 libtinfo5  build-essential liblapack-dev libblas-dev gfortran
+
+      - name: Dist
+        run: |
+          VERSION=$(git describe --match=v*)
+          TAG_EXISTS="$(git tag -l $VERSION)"
+          bazel build -c opt --stamp --embed_label=${VERSION} --//dist:version=${VERSION} --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_colab_wheel
+          echo "VERSION=${VERSION}" >> ${GITHUB_ENV}
+          echo "TAG_EXISTS=${TAG_EXISTS}" >> ${GITHUB_ENV}
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: env.TAG_EXISTS == ''
+        with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}  # needed for the release to create the tag.
+          files: bazel-bin/dist/xls_colab-*-py3-none-any.whl
