@@ -41,6 +41,10 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "TAG_EXISTS=$TAG_EXISTS" >> $GITHUB_ENV
 
+      - name: Dist
+        run: |
+          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt -- //dist:xls_dist_tar
+
       - name: Release
         uses: softprops/action-gh-release@v1
         if: env.TAG_EXISTS == ''
