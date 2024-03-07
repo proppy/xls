@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          fetch-depth: 0 # so that git-describe can find previous tags
+          fetch-depth: 0 # so that git-describe can find previous tags.
       - uses: actions/cache@v3
         with:
           path: "~/.cache/bazel"
@@ -46,3 +46,7 @@ jobs:
         with:
           tag_name: ${{ env.VERSION }}
           files: bazel-bin/dist/xls-*.*
+
+      - name: Cleanup
+        run: |
+          rm -fR bazel-bin/dist/ # do not cache released artifacts
