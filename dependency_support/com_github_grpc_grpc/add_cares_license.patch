@@ -1,0 +1,14 @@
+diff --git third_party/cares/cares.BUILD third_party/cares/cares.BUILD
+index 5a008ed5ae..91a5c9cb8c 100644
+--- third_party/cares/cares.BUILD
++++ third_party/cares/cares.BUILD
+@@ -1,5 +1,9 @@
+ load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+ 
++licenses(["notice"])  # MIT
++
++exports_files(["LICENSE.md"])
++
+ config_setting(
+     name = "darwin",
+     values = {"cpu": "darwin"},
