@@ -16,6 +16,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load(":dist.bzl", "xls_release")
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -57,6 +58,21 @@ pkg_files(
     # use forward `/` to prevent copybara transformation.
     prefix = "/xls/dslx/stdlib",
     strip_prefix = strip_prefix.from_pkg(),
+)
+
+py_package(
+    name = "xls_colab_pkg",
+    deps = [
+      "//xls/contrib/colab",
+    ],
+)
+
+py_wheel(
+    name = "xls_colab_wheel",
+    distribution = "xls_colab",
+    python_tag = "py3",
+    version = "0.0.0",
+    deps = [":xls_colab_pkg"],
 )
 
 pkg_tar(
