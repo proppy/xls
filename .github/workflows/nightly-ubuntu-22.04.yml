@@ -40,12 +40,13 @@ jobs:
       - name: Bazel Test All (opt)
         run: |
           "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
+
       - name: Dist
         run: |
-	  VERSION="$(git rev-list --count HEAD)-$(git rev-parse --short HEAD)"
+	  VERSION=${{github.run_id}}
           "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=${VERSION} --//dist:os=ubuntu_22.04  --//dist:arch=x86_64 -- //dist:xls_dist_tar
 	  echo "VERSION=${VERSION}" >> $GITHUB_ENV
-	
+
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
