@@ -40,5 +40,8 @@ jobs:
       - name: Bazel Test All (opt)
         run: |
           "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
+      - name: Dist
+        run: |
+          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=0.0.0 --//dist:os=ubuntu_22.04  --//dist:arch=x86_64 -- //dist:xls_dist_tar
       - name: Release
         uses: softprops/action-gh-release@v1
