@@ -13,8 +13,10 @@
 # limitations under the License.
 
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load(":dist.bzl", "xls_release")
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 
 filegroup(
     name = "third_party_notices",
@@ -60,10 +62,38 @@ string_flag(
 )
 
 xls_release(
-    name = "xls_package_vars",
+    name = "xls_release_tar_vars",
     version = ":version",
     os = ":os",
     arch = ":arch",
+)
+
+
+py_package(
+    name = "xls_pkg",
+    deps = [
+      "//xls/scheduling:pipeline_schedule_py_pb2",
+      "//xls/codegen:xls_metrics_py_pb2",
+      "//xls/codegen:module_signature_py_pb2",
+      "//xls/ir:op_py_pb2",
+    ],
+)
+
+py_wheel(
+    name = "xls_wheel",
+    distribution = "xls",
+    python_tag = "py3",
+    version = "0.0.0",
+    deps = [":xls_pkg"],
+)
+
+pkg_files(
+    name = "xls_stdlib_dslx",
+    srcs = [
+	"//xls/dslx/stdlib:x_files",
+    ],
+    prefix = "xls/dslx/stdlib",
+    strip_prefix = strip_prefix.from_pkg(),
 )
 
 pkg_tar(
@@ -71,7 +101,6 @@ pkg_tar(
     extension = "tar.gz",
     package_file_name = "xls-{version}-{os}-{arch}.tar.gz",
     package_dir = "xls-{version}-{os}-{arch}",
-    include_runfiles = True,
     srcs = [
 	":THIRD_PARTY_NOTICES.txt",
 	"//:LICENSE",
@@ -80,14 +109,9 @@ pkg_tar(
 	"//xls/tools:codegen_main",
 	"//xls/tools:opt_main",
 	"//xls/tools:proto_to_dslx_main",
+	":xls_wheel",
+	":xls_stdlib_dslx",
     ],
-    symlinks = {
-       "./interpreter_main": "interpreter_main.runfiles/xls/dslx/interpreter_main",
-       "./ir_converter_main": "ir_converter_main.runfiles/xls/dslx/ir_convert/ir_converter_main",
-       "./codegen_main": "codegen_main.runfiles/xls/tools/codegen_main",
-       "./opt_main": "opt_main.runfiles/xls/tools/opt_main",
-       "./proto_to_dslx_main": "proto_to_dslx_main.runfiles/xls/tools/proto_to_dslx_main",
-    },
     stamp = 1,
-    package_variables = ":xls_package_vars",
+    package_variables = ":xls_release_tar_vars",
 )
