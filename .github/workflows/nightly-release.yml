@@ -53,7 +53,7 @@ jobs:
         with:
           tag_name: ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          files: bazel-bin/dist/xls-*.*
+          files: bazel-bin/dist/xls*
 
       - name: Cleanup
         run: |
