@@ -14,8 +14,10 @@
 
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load(":dist.bzl", "xls_release")
+load("@rules_python//python:packaging.bzl", "py_package", "py_wheel")
 
 package(
     default_applicable_licenses = ["//:license"],
@@ -52,6 +54,34 @@ pkg_files(
     ],
     # use forward `/` to prevent copybara transformation.
     prefix = "/xls/dslx/stdlib",
+    strip_prefix = strip_prefix.from_pkg(),
+)
+
+
+py_package(
+    name = "xls_pkg",
+    deps = [
+      "//xls/scheduling:pipeline_schedule_py_pb2",
+      "//xls/codegen:xls_metrics_py_pb2",
+      "//xls/codegen:module_signature_py_pb2",
+      "//xls/ir:op_py_pb2",
+    ],
+)
+
+py_wheel(
+    name = "xls_wheel",
+    distribution = "xls",
+    python_tag = "py3",
+    version = "0.0.0",
+    deps = [":xls_pkg"],
+)
+
+pkg_files(
+    name = "xls_stdlib_dslx",
+    srcs = [
+	"//xls/dslx/stdlib:x_files",
+    ],
+    prefix = "xls/dslx/stdlib",
     strip_prefix = strip_prefix.from_pkg(),
 )
 
