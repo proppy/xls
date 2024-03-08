@@ -53,6 +53,7 @@ jobs:
         if: env.TAG_EXISTS == ''
         with:
           tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
           files: bazel-bin/dist/xls-*.*
 
       - name: Cleanup
