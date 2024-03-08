@@ -69,7 +69,7 @@ py_package(
 )
 
 py_wheel(
-    name = "xls_wheel",
+    name = "xls_dist_wheel",
     distribution = "xls",
     python_tag = "py3",
     version = "0.0.0",
