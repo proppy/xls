@@ -3,6 +3,11 @@
 
 name: Nightly Ubuntu 22.04
 on:
+on:
+  # Trigger on `release` branch while we are developing the action.
+  push:
+    branches:
+      - release
   schedule:
     # Nightly at midnight -- uses UTC, so 7am.
     - cron:  '0 7 * * *'
