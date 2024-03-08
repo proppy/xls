@@ -68,23 +68,19 @@ xls_release(
     arch = ":arch",
 )
 
-
 py_package(
-    name = "xls_pkg",
+    name = "xls_colab_pkg",
     deps = [
-      "//xls/scheduling:pipeline_schedule_py_pb2",
-      "//xls/codegen:xls_metrics_py_pb2",
-      "//xls/codegen:module_signature_py_pb2",
-      "//xls/ir:op_py_pb2",
+      "//xls/contrib/colab",
     ],
 )
 
 py_wheel(
-    name = "xls_dist_wheel",
-    distribution = "xls",
+    name = "xls_colab_wheel",
+    distribution = "xls_colab",
     python_tag = "py3",
     version = "0.0.0",
-    deps = [":xls_pkg"],
+    deps = [":xls_colab_pkg"],
 )
 
 pkg_files(
