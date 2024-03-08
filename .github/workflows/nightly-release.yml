@@ -13,9 +13,11 @@ jobs:
   build:
     name: Nightly Ubuntu 22.04
     runs-on:
-      labels: ubuntu-22.04-64core
+      labels: ubuntu-22.04
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0 # so that git-describe can find previous tags.
       - uses: actions/cache@v3
         with:
           path: "~/.cache/bazel"
@@ -32,6 +34,22 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/bin/"
           mv bazelisk-linux-amd64 "${GITHUB_WORKSPACE}/bin/bazel"
           chmod +x "${GITHUB_WORKSPACE}/bin/bazel"
-      - name: Bazel Test All (opt)
+
+      - name: Dist
         run: |
-          "${GITHUB_WORKSPACE}/bin/bazel" test -c opt -- //xls/...
+          VERSION=$(git describe --match=v*)
+          TAG_EXISTS="$(git tag -l $VERSION)"
+          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --//dist:version=$VERSION --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG_EXISTS=$TAG_EXISTS" >> $GITHUB_ENV
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: env.TAG_EXISTS == ''
+        with:
+          tag_name: ${{ env.VERSION }}
+          files: bazel-bin/dist/xls-*.*
+
+      - name: Cleanup
+        run: |
+          rm -fR bazel-bin/dist/ # do not cache released artifacts
