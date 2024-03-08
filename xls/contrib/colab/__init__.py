@@ -72,7 +72,7 @@ def parse_dslx_argstring(
 
 def register_dslx_magic():
   """Register the %%dslx magic in the IPython context."""
-  register_cell_magic(dslx)
+  return register_cell_magic(dslx)
 
 @magic_arguments.magic_arguments()
 @magic_arguments.argument('--top')
