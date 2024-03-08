@@ -166,6 +166,11 @@ proto_library(
     srcs = ["foreign_function_data.proto"],
 )
 
+py_proto_library(
+    name = "foreign_function_data_py_pb2",
+    deps = [":foreign_function_data_proto"],
+)
+
 cc_proto_library(
     name = "foreign_function_data_cc_proto",
     deps = [":foreign_function_data_proto"],
