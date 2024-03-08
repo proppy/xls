@@ -80,7 +80,7 @@ py_package(
 )
 
 py_wheel(
-    name = "xls_wheel",
+    name = "xls_dist_wheel",
     distribution = "xls",
     python_tag = "py3",
     version = "0.0.0",
@@ -109,7 +109,6 @@ pkg_tar(
 	"//xls/tools:codegen_main",
 	"//xls/tools:opt_main",
 	"//xls/tools:proto_to_dslx_main",
-	":xls_wheel",
 	":xls_stdlib_dslx",
     ],
     stamp = 1,
