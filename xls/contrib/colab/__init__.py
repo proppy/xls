@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import pathlib
+
 from xls.codegen import module_signature_pb2
 from xls.codegen import xls_metrics_pb2
 from xls.ir import op_pb2
