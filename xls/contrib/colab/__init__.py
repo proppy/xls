@@ -71,7 +71,6 @@ def parse_dslx_argstring(
   return toolchain_kwargs
 
 
-@register_cell_magic
 @magic_arguments.magic_arguments()
 @magic_arguments.argument('--top')
 @magic_arguments.argument('--reset')
