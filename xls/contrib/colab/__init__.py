@@ -70,6 +70,9 @@ def parse_dslx_argstring(
   toolchain_kwargs = magic_kwargs
   return toolchain_kwargs
 
+def register_dslx_magic():
+  """Register the %%dslx magic in the IPython context."""
+  register_cell_magic(dslx)
 
 @magic_arguments.magic_arguments()
 @magic_arguments.argument('--top')
