@@ -20,12 +20,13 @@ workspace(name = "com_google_xls")
 # files because it's not allowed to use `load` inside of a function.
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-# Commit on  2024-02-13, current as of 2024-02-13.
+# Current as of 2024-04-14.
 http_archive(
     name = "toolchains_llvm",
-    sha256 = "916ee9a85287058dbd00fdc3659ab92176d9019590f8e8b763cd49d85476e253",
-    strip_prefix = "toolchains_llvm-1ca11e2755544e5305d442d72018234eca914604",
-    url = "https://github.com/bazel-contrib/toolchains_llvm/archive/1ca11e2755544e5305d442d72018234eca914604.tar.gz",
+    sha256 = "e91c4361f99011a54814e1afbe5c436e0d329871146a3cd58c23a2b4afb50737",
+    strip_prefix = "toolchains_llvm-1.0.0",
+    canonical_id = "1.0.0",
+    url = "https://github.com/bazel-contrib/toolchains_llvm/releases/download/1.0.0/toolchains_llvm-1.0.0.tar.gz",
 )
 
 load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
