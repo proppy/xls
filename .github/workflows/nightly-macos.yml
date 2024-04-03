@@ -13,7 +13,7 @@ jobs:
   build:
     name: Bazel Build (opt)
     runs-on:
-      labels: macos-latest-xlarge
+      labels: macos-latest
     timeout-minutes: 600
     steps:
       - uses: actions/checkout@v2
