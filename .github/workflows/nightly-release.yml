@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@v2
         with:
           fetch-depth: 0 # so that git-describe can find previous tags.
+
       - uses: actions/cache@v3
         with:
           path: "~/.cache/bazel"
@@ -30,20 +31,15 @@ jobs:
           # if it doesn't already exist.
           key: bazel-cache-22_04-${{ github.sha }}
           restore-keys: bazel-cache-22_04-
+
       - name: Install dependencies via apt
         run: sudo apt-get install python3-distutils python3-dev python-is-python3 libtinfo5  build-essential liblapack-dev libblas-dev gfortran
-      - name: Install bazelisk
-        run: |
-          curl -LO "https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64"
-          mkdir -p "${GITHUB_WORKSPACE}/bin/"
-          mv bazelisk-linux-amd64 "${GITHUB_WORKSPACE}/bin/bazel"
-          chmod +x "${GITHUB_WORKSPACE}/bin/bazel"
 
       - name: Dist
         run: |
           VERSION=$(git describe --match=v*)
           TAG_EXISTS="$(git tag -l $VERSION)"
-          "${GITHUB_WORKSPACE}/bin/bazel" build -c opt --embed_label=${VERSION} --//dist:version=$VERSION --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar //dist:xls_colab_wheel
+          bazel build -c opt --embed_label=${VERSION} --//dist:version=$VERSION --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar //dist:xls_colab_wheel
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "TAG_EXISTS=$TAG_EXISTS" >> $GITHUB_ENV
 
