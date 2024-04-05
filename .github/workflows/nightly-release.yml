@@ -65,6 +65,7 @@ jobs:
           [[ ${PROTO_TO_DSLX_MAIN_VERSION} = ${VERSION} ]]
 
       - name: Test stdlib import
+        run: |      
           cd xls-${VERSION}-${RUNNER_OS@L}-${RUNNER_ARCH@L}/      
           ./interpreter_main ${GITHUB_WORKSPACE}/xls/examples/sha256.x
           ./ir_converter_main ${GITHUB_WORKSPACE}/xls/examples/sha256.x
