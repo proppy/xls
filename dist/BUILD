@@ -72,15 +72,6 @@ py_wheel(
     deps = [":xls_colab_pkg"],
 )
 
-pkg_files(
-    name = "xls_stdlib_dslx",
-    srcs = [
-	"//xls/dslx/stdlib:x_files",
-    ],
-    prefix = "xls/dslx/stdlib",
-    strip_prefix = strip_prefix.from_pkg(),
-)
-
 pkg_tar(
     name = "xls_dist_tar",
     srcs = [
