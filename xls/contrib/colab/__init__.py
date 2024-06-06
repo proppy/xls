@@ -166,7 +166,7 @@ def xls_test_dslx(
   print(p.stderr.decode('utf-8'))
   parse_or_typecheck_error = b'[        FAILED ]' not in p.stderr
   if p.returncode != 0 and parse_or_typecheck_error:
-    raise XlsRuntimeError(p.err)
+    raise XlsRuntimeError(p.stderr)
 
 
 def xls_ir_conversion(
