@@ -27,7 +27,7 @@ jobs:
         run: |
           VERSION=$(git describe --match=v*)
           TAG_EXISTS="$(git tag -l $VERSION)"
-          bazel build -c opt --stamp --embed_label=${VERSION} --//dist:version=${VERSION} --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_colab_wheel
+          bazel build -c opt --platforms=//dist:colab_linux_x86 --stamp --embed_label=${VERSION} --//dist:version=${VERSION} --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_colab_wheel
           echo "VERSION=${VERSION}" >> ${GITHUB_ENV}
           echo "TAG_EXISTS=${TAG_EXISTS}" >> ${GITHUB_ENV}
 
