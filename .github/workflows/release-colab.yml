@@ -27,7 +27,7 @@ jobs:
         run: |
           VERSION=$(git describe --match=v*)
           TAG_EXISTS="$(git tag -l $VERSION)"
-          bazel build -c opt --platforms=//dist:colab_linux_x86 --stamp --embed_label=${VERSION} --//dist:version=${VERSION} --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_colab_wheel
+          bazel build -c opt --platforms=//dist:colab_linux_x86 --stamp --embed_label=${VERSION} --//dist:version=${VERSION} --//dist:os=${RUNNER_OS@L} --//dist:arch=${RUNNER_ARCH@L} -- //dist:xls_dist_tar //dist:xls_colab_wheel
           echo "VERSION=${VERSION}" >> ${GITHUB_ENV}
           echo "TAG_EXISTS=${TAG_EXISTS}" >> ${GITHUB_ENV}
 
@@ -37,4 +37,4 @@ jobs:
         with:
           tag_name: ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}  # needed for the release to create the tag.
-          files: bazel-bin/dist/xls_colab-*-py3-none-any.whl
+          files: bazel-bin/dist/xls*.{tar.gz,whl}
