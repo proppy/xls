@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -36,6 +37,7 @@
 #include "xls/ir/register.h"
 #include "xls/ir/source_location.h"
 #include "xls/ir/type.h"
+#include "xls/ir/value.h"
 
 namespace xls {
 
@@ -43,8 +45,8 @@ namespace xls {
 struct ChannelPortMetadata {
   std::string channel_name;
   Type* type;
-  // The direction of the data/valid port (input or output).
-  PortDirection direction;
+  // The direction of the data/valid port (send or receive).
+  ChannelDirection direction;
   ChannelKind channel_kind;
   FlopKind flop_kind;
 
@@ -119,10 +121,26 @@ class Block : public FunctionBase {
   absl::Status AddClockPort(std::string_view name);
   const std::optional<ClockPort>& GetClockPort() const { return clock_port_; }
 
-  // Add/get a reset port to the block. Reset is represented as an input port,
-  // so it will also appear in GetInputPorts().
-  absl::StatusOr<InputPort*> AddResetPort(std::string_view name);
+  // Adds a new single-bit input port to the block and sets it as the reset port
+  // with the given behavior. Returns the port.
+  absl::StatusOr<InputPort*> AddResetPort(std::string_view port_name,
+                                          ResetBehavior behavior);
+
+  // Set an existing port in the block to be the reset port with the given
+  // behavior. If the block already has a reset port an error is returned.
+  absl::Status SetResetPort(InputPort* input_port, ResetBehavior behavior);
+
+  // Override the reset behavior of the block. The block must already have a
+  // reset port set (and necessarily an existing reset behavior defined).
+  absl::Status OverrideResetBehavior(ResetBehavior behavior);
+
+  // Returns the reset port or reset behavior of the block, or std::nullopt if
+  // the block has no reset port. Either both reset port and reset behavior is
+  // set, or neither is set.
   std::optional<InputPort*> GetResetPort() const { return reset_port_; }
+  std::optional<ResetBehavior> GetResetBehavior() const {
+    return reset_behavior_;
+  };
 
   absl::Status RemoveNode(Node* n) override;
 
@@ -134,36 +152,41 @@ class Block : public FunctionBase {
   // Returns all registers in the block in the order they were added.
   absl::Span<Register* const> GetRegisters() const { return register_vec_; }
 
-  // Returns the register in the block with the given name. Returns an error if
-  // no such register exists.
+  // Returns the register in the block with the given name. Returns an error
+  // if no such register exists.
   absl::StatusOr<Register*> GetRegister(std::string_view name) const;
 
   // Adds a register to the block.
   //
-  // The requested_name is the name which will be used if possible. If the name
-  // is already used a uniquified name will be used. Query the register to get
-  // the actual name used by the register.
+  // The requested_name is the name which will be used if possible. If the
+  // name is already used a uniquified name will be used. Query the register
+  // to get the actual name used by the register.
   absl::StatusOr<Register*> AddRegister(
       std::string_view requested_name, Type* type,
-      std::optional<Reset> reset = std::nullopt);
+      std::optional<Value> reset_value = std::nullopt);
 
-  // Removes the given register from the block. If the register is not owned by
-  // the block then an error is returned.
+  // Adds a register with a reset value of zero.
+  absl::StatusOr<Register*> AddRegisterWithZeroResetValue(
+      std::string_view requested_name, Type* type);
+
+  // Removes the given register from the block. If the register is not owned
+  // by the block then an error is returned.
   absl::Status RemoveRegister(Register* reg);
 
   // Returns the unique register read or write operation associated with the
-  // given register. Returns an error if the register is not owned by the block
-  // or if no or more than one such read/write operation exists. A block with a
-  // register without both a read and write operation is malformed but may exist
-  // temporarily after the creation of the register and before adding the read
-  // and write operations, or when replacing a register read/write operation
-  // where two such operations may briefly exist simultaneously.
+  // given register. Returns an error if the register is not owned by the
+  // block or if no or more than one such read/write operation exists. A block
+  // with a register without both a read and write operation is malformed but
+  // may exist temporarily after the creation of the register and before
+  // adding the read and write operations, or when replacing a register
+  // read/write operation where two such operations may briefly exist
+  // simultaneously.
   absl::StatusOr<RegisterRead*> GetRegisterRead(Register* reg) const;
   absl::StatusOr<RegisterWrite*> GetRegisterWrite(Register* reg) const;
 
   // Add an instantiation of the given block `instantiated_block` to this
-  // block. InstantiationInput and InstantiationOutput operations must be later
-  // added to connect the instantation to the data-flow graph.
+  // block. InstantiationInput and InstantiationOutput operations must be
+  // later added to connect the instantiation to the data-flow graph.
   absl::StatusOr<BlockInstantiation*> AddBlockInstantiation(
       std::string_view name, Block* instantiated_block);
 
@@ -178,14 +201,17 @@ class Block : public FunctionBase {
       std::string_view name, std::unique_ptr<Instantiation> instantiation);
 
   // Removes the given instantiation from the block. InstantationInput or
-  // InstantationOutput operations for this instantation should be removed prior
-  // to calling this method
+  // InstantationOutput operations for this instantation should be removed
+  // prior to calling this method
   absl::Status RemoveInstantiation(Instantiation* instantiation);
 
-  // Replaces all uses of old_isnt with new_inst and removes old_inst. Both must
-  // be currently owned by this block.
-  absl::Status ReplaceInstantiationWith(Instantiation* old_inst,
-                                        Instantiation* new_inst);
+  // Replaces all uses of old_isnt with new_inst and removes old_inst. Both
+  // must be currently owned by this block.
+  // If new_inst has different port names, an optional mapping of old to new
+  // port names can be provided.
+  absl::Status ReplaceInstantiationWith(
+      Instantiation* old_inst, Instantiation* new_inst,
+      absl::flat_hash_map<std::string, std::string> port_renaming = {});
 
   // Returns all instantiations owned by this block.
   absl::Span<Instantiation* const> GetInstantiations() const {
@@ -220,10 +246,10 @@ class Block : public FunctionBase {
   // reg_name_map is a map from old register names to new ones. If a register
   // name is not present it is an identity mapping.
   //
-  // If a block is present in 'block_instantiation_map' the corresponding block
-  // is used to provide an instantiation implementation. All instantiated blocks
-  // must be present if target_package is not null and not the existing block
-  // package.
+  // If a block is present in 'block_instantiation_map' the corresponding
+  // block is used to provide an instantiation implementation. All
+  // instantiated blocks must be present if target_package is not null and not
+  // the existing block package.
   absl::StatusOr<Block*> Clone(
       std::string_view new_name, Package* target_package = nullptr,
       const absl::flat_hash_map<std::string, std::string>& reg_name_map = {},
@@ -235,7 +261,8 @@ class Block : public FunctionBase {
   // Add metadata describing the mapping from ports to the channel they are
   // derived from.
   absl::Status AddChannelPortMetadata(ChannelPortMetadata metadata);
-  absl::Status AddChannelPortMetadata(Channel* channel, PortDirection direction,
+  absl::Status AddChannelPortMetadata(Channel* channel,
+                                      ChannelDirection direction,
                                       std::optional<std::string> data_port,
                                       std::optional<std::string> valid_port,
                                       std::optional<std::string> ready_port);
@@ -243,9 +270,11 @@ class Block : public FunctionBase {
   // Returns the port metadata for the channel with the given name or an error
   // if no such metadata exists.
   absl::StatusOr<ChannelPortMetadata> GetChannelPortMetadata(
-      std::string_view channel_name) const;
-  bool HasChannelPortMetadata(std::string_view channel_name) const {
-    return channel_port_metadata_.contains(channel_name);
+      std::string_view channel_name, ChannelDirection direction) const;
+  bool HasChannelPortMetadata(std::string_view channel_name,
+                              ChannelDirection direction) const {
+    return channel_port_metadata_.contains(
+        std::pair<std::string, ChannelDirection>(channel_name, direction));
   }
   // Returns the port node associated with the ready/valid/data signal for the
   // given channel. Returns an error if no port metadata exists for the given
@@ -253,29 +282,31 @@ class Block : public FunctionBase {
   // no ready/valid/data port exists for the channel (for example, a data port
   // for a empty tuple typed channel).
   absl::StatusOr<std::optional<PortNode*>> GetReadyPortForChannel(
-      std::string_view channel_name);
+      std::string_view channel_name, ChannelDirection direction);
   absl::StatusOr<std::optional<PortNode*>> GetValidPortForChannel(
-      std::string_view channel_name);
+      std::string_view channel_name, ChannelDirection direction);
   absl::StatusOr<std::optional<PortNode*>> GetDataPortForChannel(
-      std::string_view channel_name);
+      std::string_view channel_name, ChannelDirection direction);
 
-  // Returns the names of channels which correspond to ports on this block.
-  std::vector<std::string> GetChannelNames() const;
+  // Returns the names of and directions of channels which correspond to ports
+  // on this block.
+  std::vector<std::pair<std::string, ChannelDirection>>
+  GetChannelsWithMappedPorts() const;
 
  private:
-  // Sets the name of the given port node (InputPort or OutputPort) to the given
-  // name. Unlike xls::Node::SetName which may name the node `name` with an
-  // added suffix to ensure name uniqueness, SetNamePortExactly ensures the
-  // given node is assigned the given name. This is useful for ports because the
-  // port name is part of the interface of the generated Verilog module.  To
-  // avoid name collisions, if another *non-port* node already exists with the
-  // name in the block, then that is node given an alternative name. If another
-  // *port* node already exists with the name an error is returned.
+  // Sets the name of the given port node (InputPort or OutputPort) to the
+  // given name. Unlike xls::Node::SetName which may name the node `name` with
+  // an added suffix to ensure name uniqueness, SetNamePortExactly ensures the
+  // given node is assigned the given name. This is useful for ports because
+  // the port name is part of the interface of the generated Verilog module.
+  // To avoid name collisions, if another *non-port* node already exists with
+  // the name in the block, then that is node given an alternative name. If
+  // another *port* node already exists with the name an error is returned.
   //
-  // Fundamentally, port nodes have hard constraints on their name while naming
-  // of interior nodes is best-effort. The problem this function solves is if a
-  // node in the best-effort-naming category captures a name which is required
-  // by a node in the hard-constraint-naming category.
+  // Fundamentally, port nodes have hard constraints on their name while
+  // naming of interior nodes is best-effort. The problem this function solves
+  // is if a node in the best-effort-naming category captures a name which is
+  // required by a node in the hard-constraint-naming category.
   absl::Status SetPortNameExactly(std::string_view name, Node* port_node);
 
   Node* AddNodeInternal(std::unique_ptr<Node> node) override;
@@ -287,7 +318,7 @@ class Block : public FunctionBase {
   std::vector<Node*> DumpOrder() const;
 
   absl::StatusOr<const ChannelPortMetadata*> GetChannelPortMetadataInternal(
-      std::string_view channel_name) const;
+      std::string_view channel_name, ChannelDirection direction) const;
 
   // All ports in the block in the order they appear in the Verilog module.
   std::vector<Port> ports_;
@@ -309,8 +340,9 @@ class Block : public FunctionBase {
 
   // Vector of register pointers. Ordered by register creation time. Kept in
   // sync with the registers_ map. Enables easy, stable iteration over
-  // registers. With this vector, deletion of a register is O(n) with the number
-  // of registers. If this is a problem, a linked list might be used instead.
+  // registers. With this vector, deletion of a register is O(n) with the
+  // number of registers. If this is a problem, a linked list might be used
+  // instead.
   std::vector<Register*> register_vec_;
 
   // Instantiations owned by this block. Indexed by name. Stored as
@@ -328,11 +360,14 @@ class Block : public FunctionBase {
 
   std::optional<ClockPort> clock_port_;
   std::optional<InputPort*> reset_port_;
+  std::optional<ResetBehavior> reset_behavior_;
   NameUniquer register_name_uniquer_;
 
-  // Map from channel name to the data structure describing which ports are
-  // associated with the channel (ready/valid/data ports).
-  absl::flat_hash_map<std::string, ChannelPortMetadata> channel_port_metadata_;
+  // Map from channel name and direction to the data structure describing
+  // which ports are associated with the channel (ready/valid/data ports).
+  absl::flat_hash_map<std::pair<std::string, ChannelDirection>,
+                      ChannelPortMetadata>
+      channel_port_metadata_;
 };
 
 }  // namespace xls

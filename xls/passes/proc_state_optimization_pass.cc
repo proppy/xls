@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -48,17 +47,16 @@
 #include "xls/ir/proc.h"
 #include "xls/ir/source_location.h"
 #include "xls/ir/state_element.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
 #include "xls/passes/dataflow_visitor.h"
+#include "xls/passes/lazy_ternary_query_engine.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
 #include "xls/passes/pass_base.h"
 #include "xls/passes/query_engine.h"
 #include "xls/passes/stateless_query_engine.h"
-#include "xls/passes/ternary_query_engine.h"
 #include "xls/passes/union_query_engine.h"
 
 namespace xls {
@@ -102,24 +100,6 @@ absl::StatusOr<bool> RemoveConstantStateElements(Proc* proc,
     StateElement* state_element = proc->GetStateElement(i);
     StateRead* state_read = proc->GetStateRead(state_element);
     const Value& initial_value = state_element->initial_value();
-
-    // TODO(epastor): Remove this once we no longer use next-state elements.
-    if (proc->next_values(state_read).empty()) {
-      Node* next_state = proc->GetNextStateElement(i);
-      if (next_state == state_read) {
-        // The state element never changes, so it's definitely constant.
-        to_remove.push_back(i);
-        continue;
-      }
-
-      std::optional<Value> next_state_value =
-          query_engine.KnownValue(next_state);
-      if (next_state_value.has_value() && *next_state_value == initial_value) {
-        // We know the state never changes.
-        to_remove.push_back(i);
-      }
-      continue;
-    }
 
     bool never_changes = true;
     for (Next* next : proc->next_values(state_read)) {
@@ -235,7 +215,7 @@ class StateDependencyVisitor : public DataflowVisitor<InlineBitmap> {
 // Dependencies are only computed in a single forward pass so dependencies
 // through the proc back edge are not considered.
 absl::StatusOr<absl::flat_hash_map<Node*, InlineBitmap>>
-ComputeStateDependencies(Proc* proc) {
+ComputeStateDependencies(Proc* proc, OptimizationContext* context) {
   StateDependencyVisitor visitor(proc);
   XLS_RETURN_IF_ERROR(proc->Accept(&visitor));
   absl::flat_hash_map<Node*, InlineBitmap> state_dependencies;
@@ -244,7 +224,7 @@ ComputeStateDependencies(Proc* proc) {
   }
   if (VLOG_IS_ON(5)) {
     VLOG(5) << "State dependencies (** side-effecting operation):";
-    for (Node* node : TopoSort(proc)) {
+    for (Node* node : context->TopoSort(proc)) {
       std::vector<std::string> dependent_elements;
       for (int64_t i = 0; i < proc->GetStateElementCount(); ++i) {
         if (state_dependencies.at(node).Get(i)) {
@@ -262,12 +242,14 @@ ComputeStateDependencies(Proc* proc) {
 // Removes unobservable state elements. A state element X is observable if:
 //   (1) a side-effecting operation depends on X, OR
 //   (2) the next-state value of an observable state element depends on X.
-absl::StatusOr<bool> RemoveUnobservableStateElements(Proc* proc) {
+absl::StatusOr<bool> RemoveUnobservableStateElements(
+    Proc* proc, OptimizationContext* context) {
   if (proc->GetStateElementCount() == 0) {
     return false;
   }
   absl::flat_hash_map<Node*, InlineBitmap> state_dependencies;
-  XLS_ASSIGN_OR_RETURN(state_dependencies, ComputeStateDependencies(proc));
+  XLS_ASSIGN_OR_RETURN(state_dependencies,
+                       ComputeStateDependencies(proc, context));
 
   // Compute an adjacency matrix for which state elements affect each other.
   //
@@ -384,9 +366,6 @@ absl::Status ConstantChainToStateMachine(Proc* proc,
   XLS_ASSIGN_OR_RETURN(StateRead * state_machine_read,
                        proc->AppendStateElement(
                            state_machine_name, ZeroOfType(state_machine_type)));
-  XLS_ASSIGN_OR_RETURN(
-      int64_t state_machine_index,
-      proc->GetStateElementIndex(state_machine_read->state_element()));
 
   {
     XLS_ASSIGN_OR_RETURN(
@@ -408,15 +387,10 @@ absl::Status ConstantChainToStateMachine(Proc* proc,
             SourceInfo(), machine_too_large,
             std::vector<Node*>({machine_plus_one, state_machine_read}),
             std::nullopt));
-    // TODO(epastor): Clean this up once we no longer use next-state elements.
-    if (proc->next_values().empty()) {
-      XLS_RETURN_IF_ERROR(proc->SetNextStateElement(state_machine_index, sel));
-    } else {
-      XLS_RETURN_IF_ERROR(
-          proc->MakeNode<Next>(SourceInfo(), /*state_read=*/state_machine_read,
-                               /*value=*/sel, /*predicate=*/std::nullopt)
-              .status());
-    }
+    XLS_RETURN_IF_ERROR(
+        proc->MakeNode<Next>(SourceInfo(), /*state_read=*/state_machine_read,
+                             /*value=*/sel, /*predicate=*/std::nullopt)
+            .status());
   }
 
   std::vector<Node*> initial_state_literals;
@@ -429,17 +403,12 @@ absl::Status ConstantChainToStateMachine(Proc* proc,
     initial_state_literals.push_back(init);
   }
 
-  Node* chain_constant;
-  if (proc->next_values(proc->GetStateRead(chain.front())).empty()) {
-    chain_constant = proc->GetNextStateElement(chain.front());
-  } else {
-    CHECK_EQ(proc->next_values(proc->GetStateRead(chain.front())).size(), 1);
-    Next* next_value =
-        *proc->next_values(proc->GetStateRead(chain.front())).begin();
-    CHECK(next_value->predicate() == std::nullopt &&
-          query_engine.IsFullyKnown(next_value->value()));
-    chain_constant = next_value->value();
-  }
+  CHECK_EQ(proc->next_values(proc->GetStateRead(chain.front())).size(), 1);
+  Next* next_value =
+      *proc->next_values(proc->GetStateRead(chain.front())).begin();
+  CHECK(next_value->predicate() == std::nullopt &&
+        query_engine.IsFullyKnown(next_value->value()));
+  Node* chain_constant = next_value->value();
   CHECK(chain_constant != nullptr && query_engine.IsFullyKnown(chain_constant));
   XLS_ASSIGN_OR_RETURN(
       Literal * chain_literal,
@@ -483,16 +452,6 @@ absl::StatusOr<bool> ConvertConstantChainsToStateMachines(
     Proc* proc, QueryEngine& query_engine) {
   bool changed = false;
   for (int64_t i = 0; i < proc->GetStateElementCount(); ++i) {
-    if (query_engine.IsFullyKnown(proc->GetNextStateElement(i))) {
-      XLS_RETURN_IF_ERROR(ConstantChainToStateMachine(proc, {i}, query_engine));
-      changed = true;
-
-      // Repopulate the query engine in case we need to use it again.
-      XLS_RETURN_IF_ERROR(query_engine.Populate(proc).status());
-
-      continue;
-    }
-
     const absl::btree_set<Next*, Node::NodeIdLessThan>& next_values =
         proc->next_values(proc->GetStateRead(i));
     if (next_values.size() != 1) {
@@ -516,19 +475,17 @@ absl::StatusOr<bool> ConvertConstantChainsToStateMachines(
 }  // namespace
 
 absl::StatusOr<bool> ProcStateOptimizationPass::RunOnProcInternal(
-    Proc* proc, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Proc* proc, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   bool changed = false;
 
   XLS_ASSIGN_OR_RETURN(bool zero_width_changed,
                        RemoveZeroWidthStateElements(proc));
   changed = changed || zero_width_changed;
 
-  std::vector<std::unique_ptr<QueryEngine>> query_engines;
-  query_engines.push_back(std::make_unique<StatelessQueryEngine>());
-  query_engines.push_back(std::make_unique<TernaryQueryEngine>());
-  UnionQueryEngine query_engine(std::move(query_engines));
-  XLS_RETURN_IF_ERROR(query_engine.Populate(proc).status());
+  auto query_engine = UnionQueryEngine::Of(
+      StatelessQueryEngine(),
+      GetSharedQueryEngine<LazyTernaryQueryEngine>(context, proc));
 
   // Run constant state-element removal to fixed point; should usually take just
   // one additional pass to verify, except for chains like next_s1 := s1,
@@ -538,9 +495,6 @@ absl::StatusOr<bool> ProcStateOptimizationPass::RunOnProcInternal(
   do {
     XLS_ASSIGN_OR_RETURN(constant_changed,
                          RemoveConstantStateElements(proc, query_engine));
-    if (constant_changed) {
-      XLS_RETURN_IF_ERROR(query_engine.Populate(proc).status());
-    }
     changed = changed || constant_changed;
   } while (constant_changed);
 
@@ -550,7 +504,7 @@ absl::StatusOr<bool> ProcStateOptimizationPass::RunOnProcInternal(
   changed = changed || constant_chains_changed;
 
   XLS_ASSIGN_OR_RETURN(bool unobservable_changed,
-                       RemoveUnobservableStateElements(proc));
+                       RemoveUnobservableStateElements(proc, context));
   changed = changed || unobservable_changed;
 
   return changed;

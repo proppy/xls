@@ -20,6 +20,7 @@
 #include "absl/status/statusor.h"
 #include "xls/codegen/codegen_pass.h"
 #include "xls/ir/block.h"
+#include "xls/passes/optimization_pass.h"
 
 namespace xls::verilog {
 
@@ -27,7 +28,8 @@ namespace xls::verilog {
 // the IR for lowering to Verilog. After the pipeline is complete a signature is
 // generated and the Block may be passed to block_generator for generating
 // Verilog.
-std::unique_ptr<CodegenCompoundPass> CreateCodegenPassPipeline();
+std::unique_ptr<CodegenCompoundPass> CreateCodegenPassPipeline(
+    OptimizationContext* context);
 
 // Runs the codegen pass pipeline on the given block with the given options.
 // Returns true if a change has been made by anything in the pipeline.
@@ -37,7 +39,8 @@ std::unique_ptr<CodegenCompoundPass> CreateCodegenPassPipeline();
 // information in addition to the block graph. Without this information some
 // codegen passes might be unable to inspect or modify the code in any deep way.
 absl::StatusOr<bool> RunCodegenPassPipeline(const CodegenPassOptions& options,
-                                            Block* block);
+                                            Block* block,
+                                            OptimizationContext* context);
 
 }  // namespace xls::verilog
 

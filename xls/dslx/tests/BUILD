@@ -678,6 +678,8 @@ dslx_lang_test(name = "std_lsb")
 
 dslx_lang_test(name = "std_alias")
 
+dslx_lang_test(name = "std_find_index_on_enum_array")
+
 filegroup(
     name = "mod_imported_file",
     srcs = ["mod_imported.x"],
@@ -711,6 +713,13 @@ dslx_lang_test(
 )
 
 dslx_lang_test(name = "mod_use_in_parametric")
+
+dslx_lang_test(name = "mod_use_stdlib")
+
+dslx_lang_test(
+    name = "mod_use_simple_enum",
+    dslx_deps = [":mod_simple_enum_dslx"],
+)
 
 dslx_lang_test(
     name = "mod_importer",
@@ -870,9 +879,9 @@ dslx_lang_test(
     convert_to_ir = False,
 )
 
-dslx_lang_test(
-    name = "test_f_calls_parametric_f",
-)
+dslx_lang_test(name = "test_f_calls_parametric_f")
+
+dslx_lang_test(name = "test_assert_helper")
 
 dslx_lang_test(name = "array_concat")
 

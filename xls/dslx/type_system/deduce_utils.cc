@@ -220,7 +220,9 @@ absl::Status TryEnsureFitsInType(const Number& number,
         file_table);
   };
 
-  XLS_ASSIGN_OR_RETURN(bool fits_in_type, number.FitsInType(bit_count));
+  XLS_ASSIGN_OR_RETURN(
+      bool fits_in_type,
+      number.FitsInType(bit_count, maybe_signed.value_or(false)));
   if (!fits_in_type) {
     return does_not_fit();
   }
@@ -467,6 +469,13 @@ static absl::StatusOr<ColonRefSubjectT> ResolveColonRefNameRefSubject(
     return struct_def;
   }
 
+  if (UseTreeEntry* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer);
+      use_tree_entry != nullptr) {
+    XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported,
+                         type_info->GetImportedOrError(use_tree_entry));
+    return imported->module;
+  }
+
   TypeAlias* type_alias = dynamic_cast<TypeAlias*>(definer);
   if (type_alias == nullptr) {
     return make_subject_error();
@@ -620,13 +629,12 @@ absl::StatusOr<Function*> ResolveFunction(Expr* callee,
 
   auto* colon_ref = dynamic_cast<ColonRef*>(callee);
   XLS_RET_CHECK_NE(colon_ref, nullptr);
-  std::optional<Import*> import = colon_ref->ResolveImportSubject();
+  std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
   XLS_RET_CHECK(import.has_value())
       << "ColonRef did not refer to an import: " << colon_ref->ToString();
-  std::optional<const ImportedInfo*> imported_info =
-      type_info->GetImported(*import);
-  return imported_info.value()->module->GetMemberOrError<Function>(
-      colon_ref->attr());
+  XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info,
+                       type_info->GetImportedOrError(import.value()));
+  return imported_info->module->GetMemberOrError<Function>(colon_ref->attr());
 }
 
 absl::StatusOr<Proc*> ResolveProc(Expr* callee, const TypeInfo* type_info) {
@@ -636,13 +644,12 @@ absl::StatusOr<Proc*> ResolveProc(Expr* callee, const TypeInfo* type_info) {
 
   auto* colon_ref = dynamic_cast<ColonRef*>(callee);
   XLS_RET_CHECK_NE(colon_ref, nullptr);
-  std::optional<Import*> import = colon_ref->ResolveImportSubject();
+  std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
   XLS_RET_CHECK(import.has_value())
       << "ColonRef did not refer to an import: " << colon_ref->ToString();
-  std::optional<const ImportedInfo*> imported_info =
-      type_info->GetImported(*import);
-  return imported_info.value()->module->GetMemberOrError<Proc>(
-      colon_ref->attr());
+  XLS_ASSIGN_OR_RETURN(const ImportedInfo* imported_info,
+                       type_info->GetImportedOrError(import.value()));
+  return imported_info->module->GetMemberOrError<Proc>(colon_ref->attr());
 }
 
 absl::StatusOr<std::unique_ptr<Type>> ParametricBindingToType(
@@ -1046,6 +1053,35 @@ void WarnOnInappropriateConstantName(std::string_view identifier,
                         "identifiers; got: `%s`",
                         identifier));
   }
+}
+
+absl::StatusOr<InterpValue> GetBitCountAsInterpValue(const Type* type) {
+  if (type->IsMeta()) {
+    XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
+  }
+  XLS_ASSIGN_OR_RETURN(TypeDim bit_count_ctd, type->GetTotalBitCount());
+  XLS_ASSIGN_OR_RETURN(
+      int64_t bit_count,
+      std::get<InterpValue>(bit_count_ctd.value()).GetBitValueViaSign());
+  return InterpValue::MakeU32(bit_count);
+}
+
+absl::StatusOr<InterpValue> GetElementCountAsInterpValue(const Type* type) {
+  if (type->IsMeta()) {
+    XLS_ASSIGN_OR_RETURN(type, UnwrapMetaType(*type));
+  }
+  if (const auto* array_type = dynamic_cast<const ArrayType*>(type)) {
+    XLS_ASSIGN_OR_RETURN(int64_t size, array_type->size().GetAsInt64());
+    CHECK(static_cast<uint32_t>(size) == size);
+    return InterpValue::MakeU32(size);
+  }
+  if (const auto* tuple_type = dynamic_cast<const TupleType*>(type)) {
+    return InterpValue::MakeU32(tuple_type->members().size());
+  }
+  if (const auto* struct_type = dynamic_cast<const StructType*>(type)) {
+    return InterpValue::MakeU32(struct_type->members().size());
+  }
+  return GetBitCountAsInterpValue(type);
 }
 
 }  // namespace xls::dslx

@@ -3146,6 +3146,62 @@ proc Counter {
   ExpectIr(converted, TestName());
 }
 
+TEST(IrConverterTest, BitCount) {
+  constexpr std::string_view kProgram = R"(
+struct S {
+  a: u32
+}
+
+struct T<N: u32> {
+  a: uN[N]
+}
+
+fn main() -> u32 {
+  bit_count<u32>() +
+  bit_count<s64>() +
+  bit_count<u32[u32:4]>() +
+  bit_count<bool>() +
+  bit_count<S>() +
+  bit_count<T<u32:4>>() +
+  bit_count<(u32, bool)>()
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(kProgram, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, ElementCount) {
+  constexpr std::string_view kProgram = R"(
+struct S {
+  a: u32,
+  b: u32
+}
+
+struct T<N: u32> {
+  a: uN[N]
+}
+
+fn main() -> u32 {
+  element_count<u32>() +
+  element_count<s64>() +
+  element_count<u32[u32:4]>() +
+  element_count<u32[u32:4][u32:5]>() +
+  element_count<bool>() +
+  element_count<S>() +
+  element_count<T<u32:4>>() +
+  element_count<(u32, bool)>()
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(kProgram, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
 TEST(IrConverterTest, MapInvocationWithBuiltinFunction) {
   constexpr std::string_view program =
       R"(
@@ -3288,6 +3344,53 @@ TEST(IrConverterTest, UseTreeEntryCallInParametric) {
   fn f<N: u32>(x: bits[N]) -> bool { is_pow2(x) }
   fn main() -> bool { f(u2:3) }
 )";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(program, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, MatchExhaustiveMultiplePatternLastArm) {
+  constexpr std::string_view program = R"(
+fn main(x: u2) -> u32 {
+  match x {
+    u2:0 | u2:1 => u32:0,
+    u2:2 | u2:3 => u32:1,
+  }
+}
+)";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(program, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, MatchExhaustiveOneRangeAndValueInSingleArm) {
+  constexpr std::string_view program = R"(
+  fn main(x: u2) -> u32 {
+    match x {
+      u2:0..u2:3 | u2:3 => u32:42,
+    }
+  }
+  )";
+
+  XLS_ASSERT_OK_AND_ASSIGN(
+      std::string converted,
+      ConvertModuleForTest(program, ConvertOptions{.emit_positions = false}));
+  ExpectIr(converted, TestName());
+}
+
+TEST(IrConverterTest, MatchExhaustiveRangeInTrailingArm) {
+  constexpr std::string_view program = R"(
+  fn main(x: u2) -> u32 {
+    match x {
+      u2:3 => u32:42,
+      u2:0..u2:3 => u32:64,
+    }
+  }
+  )";
 
   XLS_ASSERT_OK_AND_ASSIGN(
       std::string converted,

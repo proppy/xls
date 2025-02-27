@@ -96,7 +96,7 @@ class AdapterBuilder {
 
     // Add input/output for adapted channel.
     ChannelReference* adapted_channel_ref_in_adapter;
-    if (adapted_channel->direction() == Direction::kSend) {
+    if (adapted_channel->direction() == ChannelDirection::kSend) {
       XLS_ASSIGN_OR_RETURN(
           adapted_channel_ref_in_adapter,
           proc_builder->AddOutputChannel(
@@ -1297,8 +1297,8 @@ absl::Status AddAdapterForMultipleSends(absl::Span<Send* const> ops,
 }  // namespace
 
 absl::StatusOr<bool> ChannelLegalizationPass::RunInternal(
-    Package* p, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Package* p, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   VLOG(3) << "Running channel legalization pass.";
   bool changed = false;
   XLS_ASSIGN_OR_RETURN(ProcElaboration elab, ElaboratePackage(p));

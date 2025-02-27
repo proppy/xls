@@ -1412,7 +1412,7 @@ absl::StatusOr<Register*> Parser::ParseRegister(Block* block) {
   //
   // With reset:
   //
-  //   reg foo(bits[32], reset_value=42, asynchronous=false, active_low=false)
+  //   reg foo(bits[32], reset_value=42)
   XLS_ASSIGN_OR_RETURN(
       Token reg_name,
       scanner_.PopTokenOrError(LexicalTokenType::kIdent, "register name"));
@@ -1420,42 +1420,19 @@ absl::StatusOr<Register*> Parser::ParseRegister(Block* block) {
   XLS_ASSIGN_OR_RETURN(Type * reg_type, ParseType(block->package()));
   // Parse optional reset attributes.
   std::optional<Value> reset_value;
-  std::optional<bool> asynchronous;
-  std::optional<bool> active_low;
   if (scanner_.TryDropToken(LexicalTokenType::kComma)) {
     absl::flat_hash_map<std::string, std::function<absl::Status()>> handlers;
     handlers["reset_value"] = [&]() -> absl::Status {
       XLS_ASSIGN_OR_RETURN(reset_value, ParseValueInternal(reg_type));
       return absl::OkStatus();
     };
-    handlers["asynchronous"] = [&]() -> absl::Status {
-      XLS_ASSIGN_OR_RETURN(asynchronous, ParseBool());
-      return absl::OkStatus();
-    };
-    handlers["active_low"] = [&]() -> absl::Status {
-      XLS_ASSIGN_OR_RETURN(active_low, ParseBool());
-      return absl::OkStatus();
-    };
     XLS_RETURN_IF_ERROR(ParseKeywordArguments(handlers));
   }
   XLS_RETURN_IF_ERROR(scanner_.DropTokenOrError(LexicalTokenType::kParenClose));
 
-  // Either all reset attributes must be specified or none must be specified.
-  std::optional<Reset> reset;
-  if (reset_value.has_value() && asynchronous.has_value() &&
-      active_low.has_value()) {
-    reset = Reset{.reset_value = reset_value.value(),
-                  .asynchronous = asynchronous.value(),
-                  .active_low = active_low.value()};
-  } else if (reset_value.has_value() || asynchronous.has_value() ||
-             active_low.has_value()) {
-    return absl::InvalidArgumentError(
-        "Register reset incompletely specified, must include all reset "
-        "attributes (reset_value, asynchronous, active_low)");
-  }
-
-  XLS_ASSIGN_OR_RETURN(Register * reg,
-                       block->AddRegister(reg_name.value(), reg_type, reset));
+  XLS_ASSIGN_OR_RETURN(
+      Register * reg,
+      block->AddRegister(reg_name.value(), reg_type, reset_value));
   if (reg->name() != reg_name.value()) {
     return absl::InvalidArgumentError(absl::StrFormat(
         "Register already exists with name %s", reg_name.value()));
@@ -1531,12 +1508,12 @@ absl::StatusOr<ProcInstantiation*> Parser::ParseProcInstantiation(Proc* proc) {
         instantiated_proc.value()->interface()[i];
     if (!proc->HasChannelReference(channel_arg_names[i],
                                    interface_channel->direction())) {
-      return absl::InvalidArgumentError(
-          absl::StrFormat("No such %s channel `%s` for proc instantiation arg "
-                          "%d in proc instantiation `%s` @ %s",
-                          DirectionToString(interface_channel->direction()),
-                          channel_arg_names[i], i, instantiation_name.value(),
-                          instantiation_name.pos().ToHumanString()));
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "No such %s channel `%s` for proc instantiation arg "
+          "%d in proc instantiation `%s` @ %s",
+          ChannelDirectionToString(interface_channel->direction()),
+          channel_arg_names[i], i, instantiation_name.value(),
+          instantiation_name.pos().ToHumanString()));
     }
     XLS_ASSIGN_OR_RETURN(
         ChannelReference * channel_arg,
@@ -1950,11 +1927,11 @@ absl::StatusOr<std::unique_ptr<ProcBuilder>> Parser::ParseProcSignature(
         XLS_ASSIGN_OR_RETURN(Token direction_token,
                              scanner_.PopTokenOrError(LexicalTokenType::kIdent,
                                                       "channel direction"));
-        Direction direction;
+        ChannelDirection direction;
         if (direction_token.value() == "in") {
-          direction = Direction::kReceive;
+          direction = ChannelDirection::kReceive;
         } else if (direction_token.value() == "out") {
-          direction = Direction::kSend;
+          direction = ChannelDirection::kSend;
         } else {
           return absl::InvalidArgumentError(absl::StrFormat(
               "Invalid direction string `%s`, expected `in` or `out`",
@@ -2004,11 +1981,11 @@ absl::StatusOr<std::unique_ptr<ProcBuilder>> Parser::ParseProcSignature(
         }
 
         switch (direction) {
-          case Direction::kSend:
+          case ChannelDirection::kSend:
             interface_channels.push_back(std::make_unique<SendChannelReference>(
                 channel_name.value(), type, kind, strictness));
             break;
-          case Direction::kReceive:
+          case ChannelDirection::kReceive:
             interface_channels.push_back(
                 std::make_unique<ReceiveChannelReference>(
                     channel_name.value(), type, kind, strictness));
@@ -2077,7 +2054,7 @@ absl::StatusOr<std::unique_ptr<ProcBuilder>> Parser::ParseProcSignature(
                                       /*should_verify=*/false);
     for (const std::unique_ptr<ChannelReference>& channel_ref :
          interface_channels) {
-      if (channel_ref->direction() == Direction::kReceive) {
+      if (channel_ref->direction() == ChannelDirection::kReceive) {
         XLS_RETURN_IF_ERROR(builder
                                 ->AddInputChannel(channel_ref->name(),
                                                   channel_ref->type(),
@@ -2368,6 +2345,18 @@ absl::StatusOr<Block*> Parser::ParseBlock(
       XLS_RETURN_IF_ERROR(block->AddChannelPortMetadata(
           std::get<ChannelPortMetadata>(attribute.payload)));
     }
+    if (std::holds_alternative<ResetAttribute>(attribute.payload)) {
+      const ResetAttribute& reset = std::get<ResetAttribute>(attribute.payload);
+      absl::StatusOr<InputPort*> reset_port =
+          block->GetInputPort(reset.port_name);
+      if (!reset_port.ok()) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Block `%s` has no input port named `%s` for reset signal",
+            block->name(), reset.port_name));
+      }
+      XLS_RETURN_IF_ERROR(
+          block->SetResetPort(reset_port.value(), reset.behavior));
+    }
   }
 
   return block;
@@ -2392,7 +2381,6 @@ absl::StatusOr<Channel*> Parser::ParseChannel(
                                                 "'(' in channel definition"));
   std::optional<int64_t> id;
   std::optional<ChannelOps> supported_ops;
-  std::optional<ChannelMetadataProto> metadata;
   std::vector<Value> initial_values;
   std::optional<ChannelKind> kind;
   std::optional<FlowControl> flow_control;
@@ -2462,22 +2450,6 @@ absl::StatusOr<Channel*> Parser::ParseChannel(
           supported_ops_token.value(),
           supported_ops_token.pos().ToHumanString()));
     }
-    return absl::OkStatus();
-  };
-  handlers["metadata"] = [&]() -> absl::Status {
-    // The metadata is serialized as a text proto.
-    XLS_ASSIGN_OR_RETURN(
-        Token metadata_token,
-        scanner_.PopTokenOrError(LexicalTokenType::kQuotedString));
-    ChannelMetadataProto proto;
-    bool success =
-        google::protobuf::TextFormat::ParseFromString(metadata_token.value(), &proto);
-    if (!success) {
-      return absl::InvalidArgumentError(
-          absl::StrFormat("Invalid channel metadata @ %s",
-                          metadata_token.pos().ToHumanString()));
-    }
-    metadata = proto;
     return absl::OkStatus();
   };
   handlers["flow_control"] = [&]() -> absl::Status {
@@ -2553,7 +2525,7 @@ absl::StatusOr<Channel*> Parser::ParseChannel(
   };
 
   XLS_RETURN_IF_ERROR(ParseKeywordArguments(
-      handlers, /*mandatory_keywords=*/{"id", "ops", "metadata", "kind"}));
+      handlers, /*mandatory_keywords=*/{"id", "ops", "kind"}));
 
   XLS_RETURN_IF_ERROR(scanner_.DropTokenOrError(LexicalTokenType::kParenClose,
                                                 "')' in channel definition"));
@@ -2593,21 +2565,20 @@ absl::StatusOr<Channel*> Parser::ParseChannel(
             channel_name.value(), *supported_ops, type, initial_values,
             channel_config, flow_control.value_or(FlowControl::kNone),
             strictness.value_or(ChannelStrictness::kProvenMutuallyExclusive),
-            *metadata, id);
+            id);
       }
       return package->CreateStreamingChannelInProc(
           channel_name.value(), *supported_ops, type, proc, initial_values,
           channel_config, flow_control.value_or(FlowControl::kNone),
-          strictness.value_or(ChannelStrictness::kProvenMutuallyExclusive),
-          *metadata, id);
+          strictness.value_or(ChannelStrictness::kProvenMutuallyExclusive), id);
     }
     case ChannelKind::kSingleValue: {
       if (proc == nullptr) {
-        return package->CreateSingleValueChannel(
-            channel_name.value(), *supported_ops, type, *metadata, id);
+        return package->CreateSingleValueChannel(channel_name.value(),
+                                                 *supported_ops, type, id);
       }
       return package->CreateSingleValueChannelInProc(
-          channel_name.value(), *supported_ops, type, proc, *metadata, id);
+          channel_name.value(), *supported_ops, type, proc, id);
     }
   }
 
@@ -2668,7 +2639,7 @@ absl::StatusOr<IrAttribute> Parser::ParseAttribute(Package* package) {
   if (attribute_name.value() == "channel_ports") {
     std::optional<std::string> channel_name;
     std::optional<Type*> type;
-    std::optional<PortDirection> direction;
+    std::optional<ChannelDirection> direction;
     std::optional<ChannelKind> channel_kind;
     std::optional<FlopKind> flop_kind;
     std::optional<std::string> data_port;
@@ -2688,10 +2659,10 @@ absl::StatusOr<IrAttribute> Parser::ParseAttribute(Package* package) {
     };
     handlers["direction"] = [&]() -> absl::Status {
       XLS_ASSIGN_OR_RETURN(std::string direction_string, ParseIdentifier());
-      if (direction_string == "in") {
-        direction = PortDirection::kInput;
-      } else if (direction_string == "out") {
-        direction = PortDirection::kOutput;
+      if (direction_string == "receive") {
+        direction = ChannelDirection::kReceive;
+      } else if (direction_string == "send") {
+        direction = ChannelDirection::kSend;
       } else {
         return absl::InvalidArgumentError(
             absl::StrFormat("Invalid direction `%s`", direction_string));
@@ -2735,6 +2706,38 @@ absl::StatusOr<IrAttribute> Parser::ParseAttribute(Package* package) {
                            .data_port = data_port,
                            .valid_port = valid_port,
                            .ready_port = ready_port}};
+  }
+  if (attribute_name.value() == "reset") {
+    std::optional<std::string> port;
+    std::optional<bool> asynchronous;
+    std::optional<bool> active_low;
+
+    XLS_RETURN_IF_ERROR(
+        scanner_.DropTokenOrError(LexicalTokenType::kParenOpen));
+    absl::flat_hash_map<std::string, std::function<absl::Status()>> handlers;
+    handlers["port"] = [&]() -> absl::Status {
+      XLS_ASSIGN_OR_RETURN(port, ParseQuotedString());
+      return absl::OkStatus();
+    };
+    handlers["asynchronous"] = [&]() -> absl::Status {
+      XLS_ASSIGN_OR_RETURN(asynchronous, ParseBool());
+      return absl::OkStatus();
+    };
+    handlers["active_low"] = [&]() -> absl::Status {
+      XLS_ASSIGN_OR_RETURN(active_low, ParseBool());
+      return absl::OkStatus();
+    };
+    XLS_RETURN_IF_ERROR(ParseKeywordArguments(
+        handlers, {"port", "asynchronous", "active_low"}));
+    XLS_RETURN_IF_ERROR(
+        scanner_.DropTokenOrError(LexicalTokenType::kParenClose));
+
+    return IrAttribute{
+        .name = attribute_name.value(),
+        .payload = ResetAttribute{
+            .port_name = port.value(),
+            .behavior = ResetBehavior{.asynchronous = asynchronous.value(),
+                                      .active_low = active_low.value()}}};
   }
   return absl::InvalidArgumentError(
       absl::StrCat("Unknown attribute: ", attribute_name.value()));

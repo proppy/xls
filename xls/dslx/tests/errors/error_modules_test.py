@@ -584,7 +584,7 @@ class ImportModuleWithTypeErrorTest(test_base.TestCase):
     stderr = self._run('xls/dslx/tests/errors/oob_signed_value.x')
     self.assertIn('oob_signed_value.x:16:3-16:9', stderr)
     self.assertIn('TypeInferenceError', stderr)
-    self.assertIn("Value '256' does not fit in the bitwidth of a sN[8]", stderr)
+    self.assertIn("Value '128' does not fit in the bitwidth of a sN[8]", stderr)
     self.assertIn('Valid values are [-128, 127]', stderr)
 
   def test_oob_unigned_value(self):
@@ -1300,6 +1300,16 @@ class ImportModuleWithTypeErrorTest(test_base.TestCase):
         want_err_retcode=True,
     )
     self.assertIn('Match is already exhaustive', stderr)
+
+  def test_logical_and_on_functions(self):
+    stderr = self._run(
+        'xls/dslx/tests/errors/logical_and_on_functions.x'
+    )
+    self.assertIn('TypeInferenceError:', stderr)
+    self.assertIn(
+        'Cannot use operator `&&` on functions.',
+        stderr,
+    )
 
 
 if __name__ == '__main__':

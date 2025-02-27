@@ -20,8 +20,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
@@ -32,10 +34,12 @@
 #include "xls/common/logging/log_lines.h"
 #include "xls/common/math_util.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/ir/change_listener.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/node.h"
 #include "xls/ir/package.h"
 #include "xls/ir/ram_rewrite.pb.h"
+#include "xls/ir/topo_sort.h"
 #include "xls/passes/pass_base.h"
 
 namespace xls {
@@ -127,9 +131,34 @@ absl::StatusOr<std::vector<RamRewrite>> RamRewritesFromProto(
   return rewrites;
 }
 
+const std::vector<Node*>& OptimizationContext::ReverseTopoSortReference(
+    FunctionBase* f) {
+  auto it = reverse_topo_sort_.find(f);
+  if (it == reverse_topo_sort_.end()) {
+    bool inserted = false;
+    std::tie(it, inserted) = reverse_topo_sort_.emplace(
+        f, InvalidatingVector(f, xls::ReverseTopoSort(f)));
+    CHECK(inserted);
+  }
+  if (it->second->empty() && f->node_count() > 0) {
+    *it->second = xls::ReverseTopoSort(f);
+  }
+  return *it->second;
+}
+
+std::vector<Node*> OptimizationContext::ReverseTopoSort(FunctionBase* f) {
+  return ReverseTopoSortReference(f);
+}
+std::vector<Node*> OptimizationContext::TopoSort(FunctionBase* f) {
+  std::vector<Node*> result;
+  result.reserve(f->node_count());
+  absl::c_reverse_copy(ReverseTopoSortReference(f), std::back_inserter(result));
+  return result;
+}
+
 absl::StatusOr<bool> OptimizationFunctionBasePass::RunOnFunctionBase(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   VLOG(2) << absl::StreamFormat("Running %s on function_base %s [pass #%d]",
                                 long_name(), f->name(),
                                 results->invocations.size());
@@ -137,7 +166,7 @@ absl::StatusOr<bool> OptimizationFunctionBasePass::RunOnFunctionBase(
   XLS_VLOG_LINES(3, f->DumpIr());
 
   XLS_ASSIGN_OR_RETURN(bool changed,
-                       RunOnFunctionBaseInternal(f, options, results));
+                       RunOnFunctionBaseInternal(f, options, results, context));
 
   VLOG(3) << absl::StreamFormat("After [changed = %d]:", changed);
   XLS_VLOG_LINES(3, f->DumpIr());
@@ -145,12 +174,13 @@ absl::StatusOr<bool> OptimizationFunctionBasePass::RunOnFunctionBase(
 }
 
 absl::StatusOr<bool> OptimizationFunctionBasePass::RunInternal(
-    Package* p, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Package* p, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   bool changed = false;
   for (FunctionBase* f : p->GetFunctionBases()) {
-    XLS_ASSIGN_OR_RETURN(bool function_changed,
-                         RunOnFunctionBaseInternal(f, options, results));
+    XLS_ASSIGN_OR_RETURN(
+        bool function_changed,
+        RunOnFunctionBaseInternal(f, options, results, context));
     changed = changed || function_changed;
   }
   return changed;
@@ -194,14 +224,15 @@ absl::StatusOr<bool> OptimizationFunctionBasePass::TransformNodesToFixedPoint(
 }
 
 absl::StatusOr<bool> OptimizationProcPass::RunOnProc(
-    Proc* proc, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Proc* proc, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   VLOG(2) << absl::StreamFormat("Running %s on proc %s [pass #%d]", long_name(),
                                 proc->name(), results->invocations.size());
   VLOG(3) << "Before:";
   XLS_VLOG_LINES(3, proc->DumpIr());
 
-  XLS_ASSIGN_OR_RETURN(bool changed, RunOnProcInternal(proc, options, results));
+  XLS_ASSIGN_OR_RETURN(bool changed,
+                       RunOnProcInternal(proc, options, results, context));
 
   VLOG(3) << absl::StreamFormat("After [changed = %d]:", changed);
   XLS_VLOG_LINES(3, proc->DumpIr());
@@ -209,12 +240,13 @@ absl::StatusOr<bool> OptimizationProcPass::RunOnProc(
 }
 
 absl::StatusOr<bool> OptimizationProcPass::RunInternal(
-    Package* p, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Package* p, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   bool changed = false;
   for (const auto& proc : p->procs()) {
-    XLS_ASSIGN_OR_RETURN(bool proc_changed,
-                         RunOnProcInternal(proc.get(), options, results));
+    XLS_ASSIGN_OR_RETURN(
+        bool proc_changed,
+        RunOnProcInternal(proc.get(), options, results, context));
     changed = changed || proc_changed;
   }
   return changed;

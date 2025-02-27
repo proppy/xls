@@ -70,11 +70,11 @@ PROC_REWRITTEN_MEMORY_IR_PATH = runfiles.get_path(
 # Block generated from the proc with:
 # --delay_model=unit --pipeline_stages=1 --reset=rst
 # TODO(allight): Rewrite test to be writable using a dslx source.
-OBSERVER_IR = '''
+OBSERVER_IR = """
 package ObserverTest
 
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""block_ports { block_name: "ObserverTest" data_port_name: "in_data" ready_port_name: "in_rdy" valid_port_name: "in_vld" }""")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""block_ports { block_name: "ObserverTest" data_port_name: "out_data" ready_port_name: "out_rdy" valid_port_name: "out_vld" }""")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
 
 top proc ObserverTest(st: bits[32] id=78, init={0}) {
   literal.2: token = literal(value=token, id=2)
@@ -86,15 +86,16 @@ top proc ObserverTest(st: bits[32] id=78, init={0}) {
 }
 
 block ObserverTest(clk: clock, in_data: bits[32], in_vld: bits[1], out_data: bits[32], rst: bits[1], out_rdy: bits[1], out_vld: bits[1], in_rdy: bits[1]) {
-  reg __st(bits[32], reset_value=0, asynchronous=false, active_low=false)
+  #![reset(port="rst", asynchronous=false, active_low=false)]
+  reg __st(bits[32], reset_value=0)
 
-  reg __in_data_reg(bits[32], reset_value=0, asynchronous=false, active_low=false)
+  reg __in_data_reg(bits[32], reset_value=0)
 
-  reg __in_data_valid_reg(bits[1], reset_value=0, asynchronous=false, active_low=false)
+  reg __in_data_valid_reg(bits[1], reset_value=0)
 
-  reg __out_data_reg(bits[32], reset_value=0, asynchronous=false, active_low=false)
+  reg __out_data_reg(bits[32], reset_value=0)
 
-  reg __out_data_valid_reg(bits[1], reset_value=0, asynchronous=false, active_low=false)
+  reg __out_data_valid_reg(bits[1], reset_value=0)
 
   in_data: bits[32] = input_port(name=in_data, id=13)
   in_vld: bits[1] = input_port(name=in_vld, id=15)
@@ -123,12 +124,12 @@ block ObserverTest(clk: clock, in_data: bits[32], in_vld: bits[1], out_data: bit
   out_vld: () = output_port(__out_data_valid_reg, name=out_vld, id=33)
   in_rdy: () = output_port(in_data_load_en, name=in_rdy, id=36)
 }
-'''
+"""
 
 OBSERVER_BLOCK_SIG = """
 module_name: "ObserverTest"
 data_ports {
-  direction: DIRECTION_INPUT
+  direction: PORT_DIRECTION_INPUT
   name: "in_data"
   width: 32
   type {
@@ -137,7 +138,7 @@ data_ports {
   }
 }
 data_ports {
-  direction: DIRECTION_INPUT
+  direction: PORT_DIRECTION_INPUT
   name: "in_vld"
   width: 1
   type {
@@ -146,7 +147,7 @@ data_ports {
   }
 }
 data_ports {
-  direction: DIRECTION_OUTPUT
+  direction: PORT_DIRECTION_OUTPUT
   name: "out_data"
   width: 32
   type {
@@ -155,7 +156,7 @@ data_ports {
   }
 }
 data_ports {
-  direction: DIRECTION_INPUT
+  direction: PORT_DIRECTION_INPUT
   name: "out_rdy"
   width: 1
   type {
@@ -164,7 +165,7 @@ data_ports {
   }
 }
 data_ports {
-  direction: DIRECTION_OUTPUT
+  direction: PORT_DIRECTION_OUTPUT
   name: "out_vld"
   width: 1
   type {
@@ -173,7 +174,7 @@ data_ports {
   }
 }
 data_ports {
-  direction: DIRECTION_OUTPUT
+  direction: PORT_DIRECTION_OUTPUT
   name: "in_rdy"
   width: 1
   type {
@@ -189,53 +190,31 @@ reset {
 }
 combinational {
 }
-data_channels {
-  name: "in"
-  kind: CHANNEL_KIND_STREAMING
-  supported_ops: CHANNEL_OPS_RECEIVE_ONLY
-  flow_control: CHANNEL_FLOW_CONTROL_READY_VALID
+channel_interfaces {
+  channel_name: "in"
+  direction: CHANNEL_DIRECTION_RECEIVE
   type {
     type_enum: BITS
     bit_count: 32
   }
-  metadata {
-    block_ports {
-      block_name: "ObserverTest"
-      data_port_name: "in_data"
-      ready_port_name: "in_rdy"
-      valid_port_name: "in_vld"
-    }
-    block_ports {
-      block_name: "ObserverTest"
-      data_port_name: "in_data"
-      ready_port_name: "in_rdy"
-      valid_port_name: "in_vld"
-    }
-  }
+  kind: CHANNEL_KIND_STREAMING
+  flow_control: CHANNEL_FLOW_CONTROL_READY_VALID
+  data_port_name: "in_data"
+  ready_port_name: "in_rdy"
+  valid_port_name: "in_vld"
 }
-data_channels {
-  name: "out"
-  kind: CHANNEL_KIND_STREAMING
-  supported_ops: CHANNEL_OPS_SEND_ONLY
-  flow_control: CHANNEL_FLOW_CONTROL_READY_VALID
+channel_interfaces {
+  channel_name: "out"
+  direction: CHANNEL_DIRECTION_SEND
   type {
     type_enum: BITS
     bit_count: 32
   }
-  metadata {
-    block_ports {
-      block_name: "ObserverTest"
-      data_port_name: "out_data"
-      ready_port_name: "out_rdy"
-      valid_port_name: "out_vld"
-    }
-    block_ports {
-      block_name: "ObserverTest"
-      data_port_name: "out_data"
-      ready_port_name: "out_rdy"
-      valid_port_name: "out_vld"
-    }
-  }
+  kind: CHANNEL_KIND_STREAMING
+  flow_control: CHANNEL_FLOW_CONTROL_READY_VALID
+  data_port_name: "out_data"
+  ready_port_name: "out_rdy"
+  valid_port_name: "out_vld"
 }
 """
 

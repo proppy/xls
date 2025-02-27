@@ -2263,6 +2263,16 @@ TEST_F(ParserTest, WideningCastOfCheckedCastOfCast) {
                 /*populate_dslx_builtins=*/true);
 }
 
+TEST_F(ParserTest, BitCount) {
+  RoundTripExpr("bit_count<u32>()", {},
+                /*populate_dslx_builtins=*/true, "bit_count<u32>()");
+}
+
+TEST_F(ParserTest, ElementCount) {
+  RoundTripExpr("element_count<u32[u32:5]>()", {},
+                /*populate_dslx_builtins=*/true, "element_count<u32[u32:5]>()");
+}
+
 TEST_F(ParserTest, CastOfCastEnum) {
   RoundTrip(R"(enum MyEnum : u3 {
     SOME_VALUE = 0,
@@ -2323,6 +2333,36 @@ TEST_F(ParserTest, ModuleWithParametric) {
   RoundTrip(R"(fn parametric<X: u32, Y: u32 = {X + X}>() -> (u32, u32) {
     (X, Y)
 })");
+}
+
+TEST_F(ParserTest, ModuleWithGenericType) {
+  RoundTrip(R"(fn parametric<T: type>() -> u32 {
+    zero!<T>()
+})");
+}
+
+TEST_F(ParserTest, DISABLED_ModuleWithGenericTypeParam) {
+  RoundTrip(R"(fn parametric<T: type>(a: T) -> u32 {
+    zero!<T>()
+})");
+}
+
+TEST_F(ParserTest, DISABLED_ModuleWithGenericTypeReturn) {
+  RoundTrip(R"(fn parametric<T: type>(a: T) -> T {
+    a
+})");
+}
+
+TEST_F(ParserTest, ModuleWithInvalidGenericType) {
+  constexpr std::string_view text = R"(fn non_parametric(T: type) -> u32 {
+    zero!<T>()
+})";
+  Scanner s{file_table_, Fileno(0), std::string{text}};
+  Parser parser{"test", &s};
+  auto module_status = parser.ParseModule();
+  ASSERT_THAT(module_status,
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("String is not a BuiltinType: \"type\"")));
 }
 
 TEST_F(ParserTest, ParametricInvocation) { RoundTripExpr("f<u32:2>()", {"f"}); }

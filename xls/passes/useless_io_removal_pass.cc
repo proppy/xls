@@ -27,7 +27,6 @@
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/value_utils.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
@@ -70,8 +69,8 @@ absl::StatusOr<ChannelMaps> ComputeChannelMaps(Package* package) {
 }  // namespace
 
 absl::StatusOr<bool> UselessIORemovalPass::RunInternal(
-    Package* p, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    Package* p, const OptimizationPassOptions& options, PassResults* results,
+    OptimizationContext* context) const {
   StatelessQueryEngine query_engine;
 
   bool changed = false;
@@ -81,7 +80,7 @@ absl::StatusOr<bool> UselessIORemovalPass::RunInternal(
   // Replace send_if and recv_if with constant true conditions with unpredicated
   // send and recv.
   for (std::unique_ptr<Proc>& proc : p->procs()) {
-    for (Node* node : TopoSort(proc.get())) {
+    for (Node* node : context->TopoSort(proc.get())) {
       Node* replacement = nullptr;
       if (node->Is<Send>()) {
         Send* send = node->As<Send>();

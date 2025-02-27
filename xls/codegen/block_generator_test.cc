@@ -66,6 +66,7 @@
 #include "xls/ir/source_location.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
+#include "xls/passes/optimization_pass.h"
 #include "xls/passes/pass_base.h"
 #include "xls/scheduling/pipeline_schedule.h"
 #include "xls/scheduling/run_pipeline_schedule.h"
@@ -146,6 +147,53 @@ pop_ready,  pop_data,  pop_valid);
 endmodule
 )";
 
+inline constexpr std::string_view kDepth1NoDataFifoRTLText =
+    R"(// simple nodata fifo depth-1 implementation
+module xls_nodata_fifo_wrapper (
+clk, rst,
+push_ready, push_valid,
+pop_ready,  pop_valid);
+  parameter Depth = 32,
+            EnableBypass = 0,
+            RegisterPushOutputs = 1,
+            RegisterPopOutputs = 1;
+  localparam AddrWidth = $clog2(Depth) + 1;
+  input  wire             clk;
+  input  wire             rst;
+  output wire             push_ready;
+  input  wire             push_valid;
+  input  wire             pop_ready;
+  output wire             pop_valid;
+
+  // Require depth be 1 and bypass disabled.
+  initial begin
+    if (EnableBypass || Depth != 1 || !RegisterPushOutputs || RegisterPopOutputs) begin
+      // FIFO configuration not supported.
+      $fatal(1);
+    end
+  end
+
+  reg full;
+
+  assign push_ready = !full;
+  assign pop_valid = full;
+
+  always @(posedge clk) begin
+    if (rst == 1'b1) begin
+      full <= 1'b0;
+    end else begin
+      if (push_valid && push_ready) begin
+        full <= 1'b1;
+      end else if (pop_valid && pop_ready) begin
+        full <= 1'b0;
+      end else begin
+        full <= full;
+      end
+    end
+  end
+endmodule
+)";
+
 inline constexpr std::string_view kDepth0FifoRTLText =
     R"(// simple fifo depth-1 implementation
 module xls_fifo_wrapper (
@@ -179,6 +227,38 @@ pop_ready,  pop_data,  pop_valid);
   assign push_ready = pop_ready;
   assign pop_valid = push_valid;
   assign pop_data = push_data;
+
+endmodule
+)";
+
+inline constexpr std::string_view kDepth0NoDataFifoRTLText =
+    R"(// simple nodata fifo depth-1 implementation
+module xls_nodata_fifo_wrapper (
+clk, rst,
+push_ready, push_valid,
+pop_ready,  pop_valid);
+  parameter Depth = 32,
+            EnableBypass = 0,
+            RegisterPushOutputs = 1,
+            RegisterPopOutputs = 1;
+  localparam AddrWidth = $clog2(Depth) + 1;
+  input  wire             clk;
+  input  wire             rst;
+  output wire             push_ready;
+  input  wire             push_valid;
+  input  wire             pop_ready;
+  output wire             pop_valid;
+
+  // Require depth be 1 and bypass disabled.
+  initial begin
+    if (EnableBypass != 1 || Depth != 0 || RegisterPushOutputs || RegisterPopOutputs) begin
+      // FIFO configuration not supported.
+      $fatal(1);
+    end
+  end
+
+  assign push_ready = pop_ready;
+  assign pop_valid = push_valid;
 
 endmodule
 )";
@@ -259,21 +339,22 @@ class BlockGeneratorTest : public VerilogTestBase {
     return bb.Build();
   }
 
-  absl::StatusOr<CodegenResult> MakeMultiProc(FifoConfig fifo_config) {
+  absl::StatusOr<CodegenResult> MakeMultiProc(FifoConfig fifo_config,
+                                              uint64_t data_width) {
     Package package(TestName());
-    Type* u32 = package.GetBitsType(32);
+    Type* uN = package.GetBitsType(data_width);
     XLS_ASSIGN_OR_RETURN(
         Channel * in,
-        package.CreateStreamingChannel("in", ChannelOps::kReceiveOnly, u32, {},
+        package.CreateStreamingChannel("in", ChannelOps::kReceiveOnly, uN, {},
                                        std::nullopt, FlowControl::kReadyValid));
     XLS_ASSIGN_OR_RETURN(
         Channel * internal,
         package.CreateStreamingChannel(
-            "internal", ChannelOps::kSendReceive, u32, {},
+            "internal", ChannelOps::kSendReceive, uN, {},
             /*fifo_config=*/fifo_config, FlowControl::kReadyValid));
     XLS_ASSIGN_OR_RETURN(
         Channel * out,
-        package.CreateStreamingChannel("out", ChannelOps::kSendOnly, u32, {},
+        package.CreateStreamingChannel("out", ChannelOps::kSendOnly, uN, {},
                                        std::nullopt, FlowControl::kReadyValid));
     TokenlessProcBuilder in_pb("proc_in", "tkn", &package);
     {
@@ -359,24 +440,16 @@ TEST_P(BlockGeneratorTest, PipelinedAandB) {
   BlockBuilder bb(TestBaseName(), &package);
   BValue a = bb.InputPort("a", u32);
   BValue b = bb.InputPort("b", u32);
-  BValue rst = bb.ResetPort("the_reset");
+  BValue rst = bb.ResetPort(
+      "the_reset", ResetBehavior{.asynchronous = false, .active_low = false});
 
   // Pipeline register 0.
-  BValue p0_a = bb.InsertRegister("p0_a", a, rst,
-                                  xls::Reset{.reset_value = Value(UBits(0, 32)),
-                                             .asynchronous = false,
-                                             .active_low = false});
-  BValue p0_b = bb.InsertRegister("p0_b", b, rst,
-                                  xls::Reset{.reset_value = Value(UBits(0, 32)),
-                                             .asynchronous = false,
-                                             .active_low = false});
+  BValue p0_a = bb.InsertRegister("p0_a", a, rst, Value(UBits(0, 32)));
+  BValue p0_b = bb.InsertRegister("p0_b", b, rst, Value(UBits(0, 32)));
 
   // Pipeline register 1.
   BValue p1_sum =
-      bb.InsertRegister("p1_sum", bb.And(p0_a, p0_b), rst,
-                        xls::Reset{.reset_value = Value(UBits(0, 32)),
-                                   .asynchronous = false,
-                                   .active_low = false});
+      bb.InsertRegister("p1_sum", bb.And(p0_a, p0_b), rst, Value(UBits(0, 32)));
 
   bb.OutputPort("sum", p1_sum);
   XLS_ASSERT_OK(bb.block()->AddClockPort("the_clock"));
@@ -479,14 +552,12 @@ TEST_P(BlockGeneratorTest, Accumulator) {
   Type* u32 = package.GetBitsType(32);
   BlockBuilder bb(TestBaseName(), &package);
   BValue in = bb.InputPort("in", u32);
-  BValue rst_n = bb.ResetPort("rst_n");
+  BValue rst_n = bb.ResetPort(
+      "rst_n", ResetBehavior{.asynchronous = false, .active_low = true});
 
   XLS_ASSERT_OK_AND_ASSIGN(
       Register * accum_reg,
-      bb.block()->AddRegister("accum", u32,
-                              xls::Reset{.reset_value = Value(UBits(10, 32)),
-                                         .asynchronous = false,
-                                         .active_low = true}));
+      bb.block()->AddRegister("accum", u32, Value(UBits(10, 32))));
   BValue accum = bb.RegisterRead(accum_reg);
   bb.RegisterWrite(accum_reg, bb.Add(in, accum), /*load_enable=*/std::nullopt,
                    rst_n);
@@ -559,12 +630,10 @@ TEST_P(BlockGeneratorTest, RegisterWithoutClockPort) {
 TEST_P(BlockGeneratorTest, BlockWithAssertNoLabel) {
   Package package(TestBaseName());
   BlockBuilder b(TestBaseName(), &package);
-  BValue rst = b.ResetPort("my_rst");
+  BValue rst = b.ResetPort(
+      "my_rst", ResetBehavior{.asynchronous = false, .active_low = false});
   BValue a = b.InputPort("a", package.GetBitsType(32));
-  BValue a_d = b.InsertRegister("a_d", a, rst,
-                                xls::Reset{.reset_value = Value(UBits(123, 32)),
-                                           .asynchronous = false,
-                                           .active_low = false});
+  BValue a_d = b.InsertRegister("a_d", a, rst, Value(UBits(123, 32)));
   b.Assert(b.AfterAll({}), b.ULt(a_d, b.Literal(UBits(42, 32))),
            "a is not greater than 42");
   XLS_ASSERT_OK(b.block()->AddClockPort("my_clk"));
@@ -582,7 +651,7 @@ TEST_P(BlockGeneratorTest, BlockWithAssertNoLabel) {
       EXPECT_THAT(
           verilog,
           HasSubstr(
-              R"(assert property (@(posedge my_clk) disable iff ($sampled(my_rst || $isunknown(a_d < 32'h0000_002a))) a_d < 32'h0000_002a) else $fatal(0, "a is not greater than 42");)"));
+              R"(assert property (@(posedge my_clk) disable iff ($sampled(my_rst !== 1'h0 || $isunknown(ult_7))) ult_7) else $fatal(0, "a is not greater than 42");)"));
     } else {
       EXPECT_THAT(verilog, Not(HasSubstr("assert")));
     }
@@ -602,7 +671,7 @@ TEST_P(BlockGeneratorTest, BlockWithAssertNoLabel) {
       EXPECT_THAT(
           verilog,
           HasSubstr(
-              R"(`MY_ASSERT(a_d < 32'h0000_002a, "a is not greater than 42", my_clk, my_rst))"));
+              R"(`MY_ASSERT(ult_7, "a is not greater than 42", my_clk, my_rst))"));
     } else {
       EXPECT_THAT(verilog, Not(HasSubstr("assert")));
     }
@@ -647,7 +716,7 @@ TEST_P(BlockGeneratorTest, BlockWithAssertWithLabel) {
       EXPECT_THAT(
           verilog,
           HasSubstr(
-              R"(assert property (@(posedge my_clk) disable iff ($sampled($isunknown(a < 32'h0000_002a))) a < 32'h0000_002a) else $fatal(0, "a is not greater than 42");)"));
+              R"(assert property (@(posedge my_clk) disable iff ($sampled($isunknown(ult_4))) ult_4) else $fatal(0, "a is not greater than 42");)"));
     } else {
       EXPECT_THAT(verilog, Not(HasSubstr("assert")));
     }
@@ -667,7 +736,7 @@ TEST_P(BlockGeneratorTest, BlockWithAssertWithLabel) {
       EXPECT_THAT(
           verilog,
           HasSubstr(
-              R"(the_label: `MY_ASSERT(a < 32'h0000_002a, "a is not greater than 42") // the_label)"));
+              R"(the_label: `MY_ASSERT(ult_4, "a is not greater than 42") // the_label)"));
     } else {
       EXPECT_THAT(verilog, Not(HasSubstr("assert")));
     }
@@ -714,10 +783,8 @@ TEST_P(BlockGeneratorTest, AssertCombinationalOrMissingClock) {
   {
     XLS_ASSERT_OK_AND_ASSIGN(std::string verilog,
                              GenerateVerilog(block, codegen_options()));
-    EXPECT_THAT(
-        verilog,
-        HasSubstr(
-            R"(assert final ($isunknown(a < 32'h0000_002a) || a < 32'h0000_002a))"));
+    EXPECT_THAT(verilog,
+                HasSubstr(R"(assert final ($isunknown(ult_4) || ult_4))"));
   }
 
   {
@@ -730,8 +797,7 @@ TEST_P(BlockGeneratorTest, AssertCombinationalOrMissingClock) {
                            R"(ASSERT({label}, {condition}, "{message}"))"))));
     EXPECT_THAT(
         verilog,
-        HasSubstr(
-            R"(ASSERT(the_label, a < 32'h0000_002a, "a is not greater than 42"))"));
+        HasSubstr(R"(ASSERT(the_label, ult_4, "a is not greater than 42"))"));
   }
 
   EXPECT_THAT(GenerateVerilog(
@@ -772,10 +838,9 @@ TEST_P(BlockGeneratorTest, AssertFmtOnlyConsumerOfReset) {
               std::make_unique<OpOverrideAssertion>(
                   R"(`MY_ASSERT({condition}, "{message}", {clk}, {rst}))"))));
   if (UseSystemVerilog()) {
-    EXPECT_THAT(
-        verilog,
-        HasSubstr(
-            R"(`MY_ASSERT(x < 32'h0000_002a, "x is not greater than 42", clk, rst))"));
+    EXPECT_THAT(verilog,
+                testing::ContainsRegex(
+                    R"(`MY_ASSERT.*, "x is not greater than 42", clk, rst)"));
   } else {
     EXPECT_THAT(verilog, Not(HasSubstr("assert")));
   }
@@ -904,20 +969,11 @@ TEST_P(BlockGeneratorTest, LoadEnables) {
   BValue b = bb.InputPort("b", u32);
   BValue b_le = bb.InputPort("b_le", u1);
   XLS_ASSERT_OK(bb.block()->AddClockPort("clk"));
-  BValue rst = bb.ResetPort("rst");
+  BValue rst = bb.ResetPort(
+      "rst", ResetBehavior{.asynchronous = false, .active_low = false});
 
-  BValue a_reg =
-      bb.InsertRegister("a_reg", a, rst,
-                        xls::Reset{.reset_value = Value(UBits(42, 32)),
-                                   .asynchronous = false,
-                                   .active_low = false},
-                        a_le);
-  BValue b_reg =
-      bb.InsertRegister("b_reg", b, rst,
-                        xls::Reset{.reset_value = Value(UBits(43, 32)),
-                                   .asynchronous = false,
-                                   .active_low = false},
-                        b_le);
+  BValue a_reg = bb.InsertRegister("a_reg", a, rst, Value(UBits(42, 32)), a_le);
+  BValue b_reg = bb.InsertRegister("b_reg", b, rst, Value(UBits(43, 32)), b_le);
 
   bb.OutputPort("a_out", a_reg);
   bb.OutputPort("b_out", b_reg);
@@ -1583,9 +1639,9 @@ TEST_P(BlockGeneratorTest, DiamondDependencyInstantiations) {
 TEST_P(BlockGeneratorTest, LoopbackFifoInstantiation) {
   constexpr std::string_view ir_text = R"(package test
 
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, metadata="")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="")
-chan loopback(bits[32], id=2, kind=streaming, ops=send_receive, flow_control=ready_valid, fifo_depth=1, bypass=false, register_push_outputs=true, metadata="")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
+chan loopback(bits[32], id=2, kind=streaming, ops=send_receive, flow_control=ready_valid, fifo_depth=1, bypass=false, register_push_outputs=true)
 
 proc running_sum(first_cycle: bits[1], init={1}) {
   tkn: token = literal(value=token, id=1000)
@@ -1778,7 +1834,7 @@ TEST_P(BlockGeneratorTest, RecvDataFeedingSendPredicate) {
 
 TEST_P(BlockGeneratorTest, DynamicStateFeedbackWithNonUpdateCase) {
   const std::string ir_text = R"(package test
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="")
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
 
 proc slow_counter(counter: bits[32], odd_iteration: bits[1], init={0, 0}) {
   tkn: token = literal(value=token, id=1000)
@@ -1836,7 +1892,7 @@ proc slow_counter(counter: bits[32], odd_iteration: bits[1], init={0, 0}) {
 
 TEST_P(BlockGeneratorTest, DynamicStateFeedbackWithOnlyUpdateCases) {
   const std::string ir_text = R"(package test
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="")
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
 
 proc bad_alternator(counter: bits[32], odd_iteration: bits[1], init={0, 0}) {
   tkn: token = literal(value=token, id=1000)
@@ -1894,7 +1950,7 @@ proc bad_alternator(counter: bits[32], odd_iteration: bits[1], init={0, 0}) {
 
 TEST_P(BlockGeneratorTest, TruncatedArrayIndices) {
   const std::string ir_text = R"(package test
-chan out(bits[7], id=10, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
+chan out(bits[7], id=10, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
 
 proc lookup_proc(x: bits[1], z: bits[1], init={0, 0}) {
   tkn: token = literal(value=token, id=1000)
@@ -1953,7 +2009,8 @@ TEST_P(BlockGeneratorTest, MultiProcWithInternalFifo) {
       CodegenResult result,
       MakeMultiProc(FifoConfig(/*depth=*/1, /*bypass=*/false,
                                /*register_push_outputs=*/true,
-                               /*register_pop_outputs=*/false)));
+                               /*register_pop_outputs=*/false),
+                    /*data_width=*/32));
   VerilogInclude fifo_definition{
       .relative_path = "fifo.v",
       .verilog_text = std::string{kDepth1FifoRTLText}};
@@ -1986,12 +2043,53 @@ TEST_P(BlockGeneratorTest, MultiProcWithInternalFifo) {
               absl_testing::IsOkAndHolds(output_values));
 }
 
+TEST_P(BlockGeneratorTest, MultiProcWithInternalNoDataFifo) {
+  XLS_ASSERT_OK_AND_ASSIGN(
+      CodegenResult result,
+      MakeMultiProc(FifoConfig(/*depth=*/1, /*bypass=*/false,
+                               /*register_push_outputs=*/true,
+                               /*register_pop_outputs=*/false),
+                    /*data_width=*/0));
+
+  VerilogInclude fifo_definition{
+      .relative_path = "fifo.v",
+      .verilog_text = std::string{kDepth1NoDataFifoRTLText}};
+  std::initializer_list<VerilogInclude> include_definitions = {fifo_definition};
+
+  result.module_generator_result.verilog_text = absl::StrCat(
+      "`include \"fifo.v\"\n\n", result.module_generator_result.verilog_text);
+  ExpectVerilogEqualToGoldenFile(GoldenFilePath(kTestName, kTestdataPath),
+                                 result.module_generator_result.verilog_text,
+                                 /*macro_definitions=*/{}, include_definitions);
+
+  ModuleSimulator simulator = NewModuleSimulator(
+      result.module_generator_result.verilog_text,
+      result.module_generator_result.signature, include_definitions);
+
+  absl::flat_hash_map<std::string, std::vector<Bits>> input_values;
+  input_values["in"] = {UBits(0, 0), UBits(0, 0), UBits(0, 0)};
+  std::vector<ValidHoldoff> valid_holdoffs = {
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+  };
+  auto ready_valid_holdoffs =
+      ReadyValidHoldoffs{.valid_holdoffs = {{"in", valid_holdoffs}}};
+
+  absl::flat_hash_map<std::string, std::vector<Bits>> output_values{
+      {"out", {UBits(0, 0), UBits(0, 0), UBits(0, 0)}}};
+  EXPECT_THAT(simulator.RunInputSeriesProc(input_values, {{"out", 3}},
+                                           ready_valid_holdoffs),
+              absl_testing::IsOkAndHolds(output_values));
+}
+
 TEST_P(BlockGeneratorTest, MultiProcDirectConnect) {
   XLS_ASSERT_OK_AND_ASSIGN(
       CodegenResult result,
       MakeMultiProc(FifoConfig(/*depth=*/0, /*bypass=*/true,
                                /*register_push_outputs=*/false,
-                               /*register_pop_outputs=*/false)));
+                               /*register_pop_outputs=*/false),
+                    /*data_width=*/32));
   VerilogInclude fifo_definition{
       .relative_path = "fifo.v",
       .verilog_text = std::string{kDepth0FifoRTLText}};
@@ -2025,12 +2123,52 @@ TEST_P(BlockGeneratorTest, MultiProcDirectConnect) {
               absl_testing::IsOkAndHolds(output_values));
 }
 
+TEST_P(BlockGeneratorTest, MultiProcNoDataDirectConnect) {
+  XLS_ASSERT_OK_AND_ASSIGN(
+      CodegenResult result,
+      MakeMultiProc(FifoConfig(/*depth=*/0, /*bypass=*/true,
+                               /*register_push_outputs=*/false,
+                               /*register_pop_outputs=*/false),
+                    /*data_width=*/0));
+  VerilogInclude fifo_definition{
+      .relative_path = "fifo.v",
+      .verilog_text = std::string{kDepth0NoDataFifoRTLText}};
+  std::initializer_list<VerilogInclude> include_definitions = {fifo_definition};
+
+  result.module_generator_result.verilog_text = absl::StrCat(
+      "`include \"fifo.v\"\n\n", result.module_generator_result.verilog_text);
+
+  ExpectVerilogEqualToGoldenFile(GoldenFilePath(kTestName, kTestdataPath),
+                                 result.module_generator_result.verilog_text,
+                                 /*macro_definitions=*/{}, include_definitions);
+
+  ModuleSimulator simulator = NewModuleSimulator(
+      result.module_generator_result.verilog_text,
+      result.module_generator_result.signature, include_definitions);
+
+  absl::flat_hash_map<std::string, std::vector<Bits>> input_values;
+  input_values["in"] = {UBits(0, 0), UBits(0, 0), UBits(0, 0)};
+  std::vector<ValidHoldoff> valid_holdoffs = {
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+      ValidHoldoff{.cycles = 2, .driven_values = {IsX(), IsX()}},
+  };
+  auto ready_valid_holdoffs =
+      ReadyValidHoldoffs{.valid_holdoffs = {{"in", valid_holdoffs}}};
+
+  absl::flat_hash_map<std::string, std::vector<Bits>> output_values{
+      {"out", {UBits(0, 0), UBits(0, 0), UBits(0, 0)}}};
+  EXPECT_THAT(simulator.RunInputSeriesProc(input_values, {{"out", 3}},
+                                           ready_valid_holdoffs),
+              absl_testing::IsOkAndHolds(output_values));
+}
+
 TEST_P(BlockGeneratorTest, SelectWithTokens) {
   const std::string ir_text = R"(package test
-chan ctrl(bits[1], id=100, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
-chan in0(bits[7], id=101, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
-chan in1(bits[7], id=102, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
-chan out(bits[7], id=103, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
+chan ctrl(bits[1], id=100, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
+chan in0(bits[7], id=101, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
+chan in1(bits[7], id=102, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
+chan out(bits[7], id=103, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=proven_mutually_exclusive)
 
 proc mux_proc(tkn: token, init={token}) {
   receive.1: (token, bits[1]) = receive(tkn, channel=ctrl, id=1)
@@ -2395,7 +2533,8 @@ TEST_P(ZeroWidthBlockGeneratorTest, ZeroWidthRecvChannel) {
 
   XLS_ASSERT_OK_AND_ASSIGN(CodegenPassUnit unit, FunctionBaseToPipelinedBlock(
                                                      schedule, options, proc));
-  std::unique_ptr<CodegenPass> passes = CreateCodegenPassPipeline();
+  OptimizationContext context;
+  std::unique_ptr<CodegenPass> passes = CreateCodegenPassPipeline(&context);
   CodegenPassResults results;
   CodegenPassOptions codegen_pass_options{.codegen_options = options,
                                           .schedule = schedule,
@@ -2438,7 +2577,8 @@ TEST_P(ZeroWidthBlockGeneratorTest, ZeroWidthSendChannel) {
   XLS_ASSERT_OK_AND_ASSIGN(CodegenPassUnit unit, FunctionBaseToPipelinedBlock(
                                                      schedule, options, proc));
 
-  std::unique_ptr<CodegenPass> passes = CreateCodegenPassPipeline();
+  OptimizationContext context;
+  std::unique_ptr<CodegenPass> passes = CreateCodegenPassPipeline(&context);
   CodegenPassResults results;
   CodegenPassOptions codegen_pass_options{.codegen_options = options,
                                           .schedule = schedule,

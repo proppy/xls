@@ -48,7 +48,6 @@ namespace {
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
-using ::testing::Optional;
 
 namespace m = ::xls::op_matchers;
 
@@ -76,10 +75,11 @@ absl::StatusOr<bool> RunMutualExclusionPass(
         MutualExclusionPass().Run(&unit, options, &scheduling_results));
     changed = changed || subpass_changed;
   }
+  OptimizationContext context;
   XLS_ASSIGN_OR_RETURN(
       subpass_changed,
       SimplificationPass().Run(unit.GetPackage(), OptimizationPassOptions(),
-                               &results));
+                               &results, &context));
   changed = changed || subpass_changed;
   return changed;
 }
@@ -196,7 +196,7 @@ TEST_F(MutualExclusionPassTest, ThreeParallelSends) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[2], init={0}) {
        literal.1: bits[2] = literal(value=1)
@@ -237,7 +237,7 @@ TEST_F(MutualExclusionPassTest, TwoSequentialSends) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        not.1: bits[1] = not(__state)
@@ -260,11 +260,11 @@ TEST_F(MutualExclusionPassTest, TwoSequentialSendsWithInterveningIO) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      chan other_channel(
        bits[32], id=1, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        not.1: bits[1] = not(__state)
@@ -288,11 +288,11 @@ TEST_F(MutualExclusionPassTest, Complex) {
 
      chan test_channel(
        bits[2], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      chan other_channel(
        bits[2], id=1, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[2], init={0}) {
        literal.1: bits[2] = literal(value=1)
@@ -322,7 +322,7 @@ TEST_F(MutualExclusionPassTest, TwoParallelReceives) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        __token: token = literal(value=token, id=1000)
@@ -351,7 +351,7 @@ TEST_F(MutualExclusionPassTest, TwoSequentialReceives) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        __token: token = literal(value=token, id=1000)
@@ -379,11 +379,11 @@ TEST_F(MutualExclusionPassTest, TwoSequentialReceivesWithInterveningIO) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      chan other_channel(
        bits[32], id=1, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        __token: token = literal(value=token, id=1000)
@@ -412,7 +412,7 @@ TEST_F(MutualExclusionPassTest, TwoSequentialReceivesWithDataDep) {
 
      chan test_channel(
        bits[1], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        __token: token = literal(value=token, id=1000)
@@ -441,11 +441,11 @@ TEST_F(MutualExclusionPassTest, TwoReceivesDependingOnReceive) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      chan other_channel(
        bits[32], id=1, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: bits[1], init={0}) {
        __token: token = literal(value=token, id=1000)
@@ -469,172 +469,6 @@ TEST_F(MutualExclusionPassTest, TwoReceivesDependingOnReceive) {
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   EXPECT_THAT(RunMutualExclusionPass(proc), IsOkAndHolds(true));
   EXPECT_EQ(NumberOfOp(proc, Op::kReceive), 2);
-}
-
-TEST_F(MutualExclusionPassTest, SelectPredicates) {
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> p, ParsePackage(R"(
-     package test_module
-
-     top proc main(
-       selector1: bits[1],
-       selector2: bits[1],
-       input1: bits[1],
-       input2: bits[1],
-       input3: bits[1],
-       init={0, 0, 0, 0, 0}
-     ) {
-       not_input1: bits[1] = not(input1)
-       not_input2: bits[1] = not(input2)
-       not_input3: bits[1] = not(input3)
-       select1: bits[1] = sel(selector1, cases=[not_input1, not_input2])
-       select2: bits[1] = sel(selector2, cases=[select1, not_input3])
-       zero: bits[1] = literal(value=0)
-       next (zero, zero, zero, zero, select2)
-     }
-  )"));
-  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
-  Predicates preds;
-  XLS_ASSERT_OK(AddSelectPredicates(&preds, proc));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("selector1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("selector2")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input2")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(1)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input3")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(1)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input2")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(1)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input3")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(1)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("select1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("select2")).has_value());
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("zero")).has_value());
-}
-
-TEST_F(MutualExclusionPassTest, SelectPredicatesCaseFanout) {
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> p, ParsePackage(R"(
-     package test_module
-
-     top proc main(
-       selector1: bits[1],
-       selector2: bits[1],
-       input1: bits[1],
-       input2: bits[1],
-       input3: bits[1],
-       init={0, 0, 0, 0, 0}
-     ) {
-       not_input1: bits[1] = not(input1)
-       not_input2: bits[1] = not(input2)
-       not_input3: bits[1] = not(input3)
-       select1: bits[1] = sel(selector1, cases=[not_input1, not_input2])
-       select2: bits[1] = sel(selector2, cases=[select1, not_input3])
-       anded: bits[1] = and(select2, not_input3)
-       zero: bits[1] = literal(value=0)
-       next (zero, zero, zero, zero, anded)
-     }
-  )"));
-  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
-  Predicates preds;
-  XLS_ASSERT_OK(AddSelectPredicates(&preds, proc));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("selector1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("selector2")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input2")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(1)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("input3")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input2")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(1)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("not_input3")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("select1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("select2")).has_value());
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("anded")).has_value());
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("zero")).has_value());
-}
-
-TEST_F(MutualExclusionPassTest, SelectPredicatesImplicitUses) {
-  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> p, ParsePackage(R"(
-     package test_module
-
-     top proc main(
-       selector1: bits[1],
-       selector2: bits[1],
-       input1: bits[1],
-       input2: bits[1],
-       input3: bits[1],
-       init={0, 0, 0, 0, 0}
-     ) {
-       not_input1: bits[1] = not(input1)
-       not_input2: bits[1] = not(input2)
-       not_input3: bits[1] = not(input3)
-       select1: bits[1] = sel(selector1, cases=[not_input1, not_input2])
-       select2: bits[1] = sel(selector2, cases=[select1, not_input3])
-       zero: bits[1] = literal(value=0)
-       next (zero, zero, zero, input2, select2)
-     }
-  )"));
-  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
-  Predicates preds;
-  XLS_ASSERT_OK(AddSelectPredicates(&preds, proc));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("selector1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("selector2")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("input2")).has_value());
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("input3")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(1)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(0)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input2")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector1"), m::Literal(1)),
-                      m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("not_input3")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(1)))));
-  EXPECT_THAT(
-      preds.GetPredicate(*proc->GetNode("select1")),
-      Optional(m::And(m::Eq(*proc->GetNode("selector2"), m::Literal(0)))));
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("select2")).has_value());
-  EXPECT_FALSE(preds.GetPredicate(*proc->GetNode("zero")).has_value());
 }
 
 TEST_F(MutualExclusionPassTest, TwoProcsBothHavingTwoParallelSends) {
@@ -664,11 +498,11 @@ TEST_F(MutualExclusionPassTest, RequiredMergeFails) {
 
      chan cin0(
        bits[32], id=0, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      chan cin1(
        bits[32], id=1, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(s: bits[1], init={0}) {
        not_s: bits[1] = not(s)
@@ -693,13 +527,11 @@ TEST_F(MutualExclusionPassTest, AvoidsCycles) {
 
      chan cin0(
        bits[32], id=0, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, strictness=arbitrary_static_order,
-       metadata="""""")
+       flow_control=ready_valid, strictness=arbitrary_static_order)
 
      chan cin1(
        bits[32], id=1, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, strictness=arbitrary_static_order,
-       metadata="""""")
+       flow_control=ready_valid, strictness=arbitrary_static_order)
 
      top proc main(s: bits[1], init={0}) {
        not_s: bits[1] = not(s)

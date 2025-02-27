@@ -37,6 +37,7 @@
 #include "xls/common/casts.h"
 #include "xls/common/status/ret_check.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/ir/change_listener.h"
 #include "xls/ir/channel.h"
 #include "xls/ir/function.h"
 #include "xls/ir/name_uniquer.h"
@@ -94,16 +95,6 @@ std::string Proc::DumpIr() const {
     }
     absl::StrAppend(&res, "  ", node->ToString(), "\n");
   }
-
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  if (next_values_.empty() && !state_elements_.empty()) {
-    auto node_formatter = [](std::string* s, Node* node) {
-      absl::StrAppend(s, node->GetName());
-    };
-    absl::StrAppend(&res, "  next (",
-                    absl::StrJoin(next_state_, ", ", node_formatter), ")\n");
-  }
   absl::StrAppend(&res, "}\n");
   return res;
 }
@@ -152,28 +143,6 @@ std::optional<int64_t> Proc::MaybeGetStateElementIndex(
     return std::distance(state_vec_.begin(), it);
   }
   return std::nullopt;
-}
-
-absl::btree_set<int64_t> Proc::GetNextStateIndices(Node* node) const {
-  auto it = next_state_indices_.find(node);
-  if (it == next_state_indices_.end()) {
-    return absl::btree_set<int64_t>();
-  }
-  return it->second;
-}
-
-absl::Status Proc::SetNextStateElement(int64_t index, Node* next) {
-  if (next->GetType() != GetStateElementType(index)) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "Cannot set next state element %d to \"%s\"; type %s does not match "
-        "proc state element type %s",
-        index, next->GetName(), next->GetType()->ToString(),
-        GetStateElementType(index)->ToString()));
-  }
-  next_state_indices_[next_state_[index]].erase(index);
-  next_state_[index] = next;
-  next_state_indices_[next].insert(index);
-  return absl::OkStatus();
 }
 
 absl::Status Proc::ReplaceState(
@@ -291,11 +260,6 @@ absl::StatusOr<StateRead*> Proc::ReplaceStateElement(
     state_name = UniquifyStateName(requested_state_name);
   }
 
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  next_state_indices_[next_state_[index]].erase(index);
-  next_state_[index] = nullptr;
-
   XLS_RETURN_IF_ERROR(RemoveNode(old_state_read));
 
   state_elements_[state_name] = std::make_unique<StateElement>(
@@ -318,11 +282,6 @@ absl::StatusOr<StateRead*> Proc::ReplaceStateElement(
         next_state.value()->GetType()->ToString(), init_value.ToString()));
   }
 
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  next_state_[index] = state_read;
-  next_state_indices_[state_read].insert(index);
-
   if (next_state.has_value()) {
     XLS_RETURN_IF_ERROR(MakeNode<Next>(SourceInfo(), state_read, *next_state,
                                        /*predicate=*/std::nullopt)
@@ -342,22 +301,6 @@ absl::Status Proc::RemoveStateElement(int64_t index) {
       return entry.second.get() == state_element;
     }));
   }
-
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  if (index < GetStateElementCount() - 1) {
-    for (auto& [_, indices] : next_state_indices_) {
-      // Relabel all indices > `index`.
-      auto it = indices.upper_bound(index);
-      absl::btree_set<int64_t> relabeled_indices(indices.begin(), it);
-      for (; it != indices.end(); ++it) {
-        relabeled_indices.insert((*it) - 1);
-      }
-      indices = std::move(relabeled_indices);
-    }
-  }
-  next_state_indices_[next_state_[index]].erase(index);
-  next_state_.erase(next_state_.begin() + index);
 
   StateElement* old_state_element = GetStateElement(index);
   StateRead* old_state_read = state_reads_.at(old_state_element);
@@ -386,7 +329,6 @@ absl::StatusOr<StateRead*> Proc::InsertStateElement(
     const Value& init_value, std::optional<Node*> read_predicate,
     std::optional<Node*> next_state) {
   XLS_RET_CHECK_LE(index, GetStateElementCount());
-  const bool is_append = (index == GetStateElementCount());
   std::string state_name = UniquifyStateName(requested_state_name);
   state_elements_[state_name] = std::make_unique<StateElement>(
       state_name, package()->GetTypeForValue(init_value), init_value);
@@ -397,8 +339,6 @@ absl::StatusOr<StateRead*> Proc::InsertStateElement(
                                                    read_predicate, state_name));
   state_reads_[state_element] = state_read;
 
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
   if (next_state.has_value()) {
     if (!ValueConformsToType(init_value, next_state.value()->GetType())) {
       return absl::InvalidArgumentError(absl::StrFormat(
@@ -411,46 +351,11 @@ absl::StatusOr<StateRead*> Proc::InsertStateElement(
                                        /*predicate=*/std::nullopt)
                             .status());
   }
-  if (!is_append) {
-    for (auto& [_, indices] : next_state_indices_) {
-      // Relabel all indices >= `index`.
-      auto it = indices.lower_bound(index);
-      absl::btree_set<int64_t> relabeled_indices(indices.begin(), it);
-      for (; it != indices.end(); ++it) {
-        relabeled_indices.insert((*it) + 1);
-      }
-      indices = std::move(relabeled_indices);
-    }
-  }
-  next_state_.insert(next_state_.begin() + index, state_read);
-  next_state_indices_[next_state_[index]].insert(index);
 
   return state_read;
 }
 
-bool Proc::HasImplicitUse(Node* node) const {
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  if (auto it = next_state_indices_.find(node);
-      it != next_state_indices_.end() && !it->second.empty()) {
-    if (node->Is<StateRead>() && it->second.size() == 1) {
-      // This is a state read that's used to define the next value of a single
-      // state element. If that state element is the same one being read, then
-      // this shouldn't count as an implicit use, because it just marks that
-      // this state element is never implicitly changed.
-      int64_t state_index = *it->second.begin();
-      if (node == GetStateRead(state_index) &&
-          absl::c_any_of(next_values(node->As<StateRead>()), [](Next* next) {
-            return !next->predicate().has_value();
-          })) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  return false;
-}
+bool Proc::HasImplicitUse(Node* node) const { return false; }
 
 absl::StatusOr<Proc*> Proc::Clone(
     std::string_view new_name, Package* target_package,
@@ -497,7 +402,7 @@ absl::StatusOr<Proc*> Proc::Clone(
   }
   if (is_new_style_proc()) {
     for (ChannelReference* channel_ref : interface()) {
-      if (channel_ref->direction() == Direction::kSend) {
+      if (channel_ref->direction() == ChannelDirection::kSend) {
         XLS_RETURN_IF_ERROR(
             cloned_proc
                 ->AddOutputChannelReference(
@@ -528,11 +433,11 @@ absl::StatusOr<Proc*> Proc::Clone(
             channel->supported_ops(), chan_type, channel->initial_values(),
             streaming_channel->channel_config(),
             streaming_channel->GetFlowControl(),
-            streaming_channel->GetStrictness(), channel->metadata());
+            streaming_channel->GetStrictness());
       } else {
         new_channel = std::make_unique<SingleValueChannel>(
             new_chan_name(channel->name()), channel->id(),
-            channel->supported_ops(), chan_type, channel->metadata());
+            channel->supported_ops(), chan_type);
       }
       XLS_RETURN_IF_ERROR(
           cloned_proc->AddChannel(std::move(new_channel)).status());
@@ -668,13 +573,6 @@ absl::StatusOr<Proc*> Proc::Clone(
     }
   }
 
-  // TODO: google/xls#1520 - remove this once fully transitioned over to
-  // `next_value` nodes.
-  for (int64_t i = 0; i < GetStateElementCount(); ++i) {
-    XLS_RETURN_IF_ERROR(cloned_proc->SetNextStateElement(
-        i, original_to_clone.at(GetNextStateElement(i))));
-  }
-
   return cloned_proc;
 }
 
@@ -754,7 +652,7 @@ absl::StatusOr<Channel*> Proc::GetChannel(std::string_view name) {
 }
 
 absl::StatusOr<ChannelRef> Proc::GetChannelRef(std::string_view name,
-                                               Direction direction) {
+                                               ChannelDirection direction) {
   if (is_new_style_proc()) {
     return GetChannelReference(name, direction);
   }
@@ -800,8 +698,9 @@ absl::StatusOr<ChannelReference*> Proc::AddInterfaceChannelReference(
           "Cannot add channel `%s` to proc `%s`. Already an "
           "%s channel of same name on the proc.",
           channel_ref->name(), name(),
-          other_channel_ref->direction() == Direction::kReceive ? "input"
-                                                                : "output"));
+          other_channel_ref->direction() == ChannelDirection::kReceive
+              ? "input"
+              : "output"));
     }
   }
   channel_references_.push_back(std::move(channel_ref));
@@ -824,9 +723,9 @@ absl::StatusOr<SendChannelReference*> Proc::AddOutputChannel(
 }
 
 absl::StatusOr<ChannelReference*> Proc::AddInterfaceChannel(
-    std::string_view name, Direction direction, Type* type, ChannelKind kind,
-    std::optional<ChannelStrictness> strictness) {
-  if (direction == Direction::kSend) {
+    std::string_view name, ChannelDirection direction, Type* type,
+    ChannelKind kind, std::optional<ChannelStrictness> strictness) {
+  if (direction == ChannelDirection::kSend) {
     return AddOutputChannel(name, type, kind, strictness);
   }
   return AddInputChannel(name, type, kind, strictness);
@@ -864,7 +763,7 @@ absl::StatusOr<ProcInstantiation*> Proc::AddProcInstantiation(
 }
 
 bool Proc::HasChannelReference(std::string_view name,
-                               Direction direction) const {
+                               ChannelDirection direction) const {
   CHECK(is_new_style_proc());
   for (const std::unique_ptr<ChannelReference>& channel_ref :
        channel_references_) {
@@ -876,7 +775,7 @@ bool Proc::HasChannelReference(std::string_view name,
 }
 
 absl::StatusOr<ChannelReference*> Proc::GetChannelReference(
-    std::string_view name, Direction direction) const {
+    std::string_view name, ChannelDirection direction) const {
   XLS_RET_CHECK(is_new_style_proc());
   for (const std::unique_ptr<ChannelReference>& channel_ref :
        channel_references_) {
@@ -886,14 +785,14 @@ absl::StatusOr<ChannelReference*> Proc::GetChannelReference(
   }
   return absl::NotFoundError(
       absl::StrFormat("No %s channel reference `%s` in proc `%s`",
-                      DirectionToString(direction), name, this->name()));
+                      ChannelDirectionToString(direction), name, this->name()));
 }
 
 absl::StatusOr<SendChannelReference*> Proc::GetSendChannelReference(
     std::string_view name) const {
   XLS_RET_CHECK(is_new_style_proc());
   XLS_ASSIGN_OR_RETURN(ChannelReference * channel_ref,
-                       GetChannelReference(name, Direction::kSend));
+                       GetChannelReference(name, ChannelDirection::kSend));
   return down_cast<SendChannelReference*>(channel_ref);
 }
 
@@ -901,7 +800,7 @@ absl::StatusOr<ReceiveChannelReference*> Proc::GetReceiveChannelReference(
     std::string_view name) const {
   XLS_RET_CHECK(is_new_style_proc());
   XLS_ASSIGN_OR_RETURN(ChannelReference * channel_ref,
-                       GetChannelReference(name, Direction::kReceive));
+                       GetChannelReference(name, ChannelDirection::kReceive));
   return down_cast<ReceiveChannelReference*>(channel_ref);
 }
 

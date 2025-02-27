@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "gmock/gmock.h"
@@ -30,6 +31,7 @@
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/create_import_data.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/parser.h"
 #include "xls/dslx/frontend/pos.h"
@@ -37,6 +39,7 @@
 #include "xls/dslx/import_data.h"
 #include "xls/dslx/type_system/type_info.h"
 #include "xls/dslx/type_system_v2/inference_table_to_type_info.h"
+#include "xls/dslx/type_system_v2/type_annotation_utils.h"
 #include "xls/dslx/type_system_v2/type_system_test_utils.h"
 #include "xls/dslx/warning_collector.h"
 #include "xls/dslx/warning_kind.h"
@@ -59,9 +62,12 @@ class InferenceTableTest : public ::testing::Test {
   }
 
   absl::StatusOr<TypeInfo*> ConvertTableToTypeInfo() {
-    XLS_ASSIGN_OR_RETURN(TypeInfo * ti, InferenceTableToTypeInfo(
-                                            *table_, *module_, *import_data_,
-                                            *warning_collector_, file_table_));
+    std::unique_ptr<Module> empty =
+        std::make_unique<Module>("test", /*fs_path=*/std::nullopt, file_table_);
+    XLS_ASSIGN_OR_RETURN(
+        TypeInfo * ti, InferenceTableToTypeInfo(
+                           *table_, *module_, *import_data_,
+                           *warning_collector_, file_table_, std::move(empty)));
     return ti;
   }
 
@@ -382,6 +388,38 @@ TEST_F(InferenceTableTest, ParametricVariableWithUnsupportedAnnotation) {
       table_->DefineParametricVariable(*foo->parametric_bindings()[0]),
       StatusIs(absl::StatusCode::kInvalidArgument,
                HasSubstr("Inference variables of type T are not supported")));
+}
+
+TEST_F(InferenceTableTest, Clone) {
+  NameDef* x = module_->Make<NameDef>(Span::Fake(), "x", /*definer=*/nullptr);
+  NameDef* y = module_->Make<NameDef>(Span::Fake(), "y", /*definer=*/nullptr);
+  NameRef* x_ref = module_->Make<NameRef>(Span::Fake(), "x", x);
+  NameRef* y_ref = module_->Make<NameRef>(Span::Fake(), "y", y);
+  AstNode* add_node = module_->Make<Binop>(Span::Fake(), BinopKind::kAdd, x_ref,
+                                           y_ref, Span::Fake());
+  XLS_ASSERT_OK_AND_ASSIGN(const NameRef* t0,
+                           table_->DefineInternalVariable(
+                               InferenceVariableKind::kType, add_node, "T0"));
+
+  const TypeAnnotation* annotation =
+      CreateU32Annotation(*module_, Span::Fake());
+
+  XLS_EXPECT_OK(table_->SetTypeVariable(add_node, t0));
+  XLS_EXPECT_OK(table_->SetTypeVariable(y_ref, t0));
+  XLS_EXPECT_OK(table_->SetTypeAnnotation(add_node, annotation));
+  XLS_EXPECT_OK(table_->SetTypeAnnotation(x_ref, annotation));
+
+  XLS_ASSERT_OK_AND_ASSIGN(AstNode * clone,
+                           table_->Clone(add_node, &NoopCloneReplacer));
+
+  Binop* cloned_add_node = down_cast<Binop*>(clone);
+  EXPECT_EQ(table_->GetTypeAnnotation(cloned_add_node), annotation);
+  EXPECT_EQ(table_->GetTypeAnnotation(cloned_add_node->lhs()), annotation);
+  EXPECT_EQ(table_->GetTypeAnnotation(cloned_add_node->rhs()), std::nullopt);
+
+  EXPECT_EQ(table_->GetTypeVariable(cloned_add_node), t0);
+  EXPECT_EQ(table_->GetTypeVariable(cloned_add_node->lhs()), std::nullopt);
+  EXPECT_EQ(table_->GetTypeVariable(cloned_add_node->rhs()), t0);
 }
 
 }  // namespace

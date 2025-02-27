@@ -933,7 +933,7 @@ class ChannelNode : public Node {
   static constexpr std::array<Op, 2> kOps = {Op::kReceive, Op::kSend};
 
   ChannelNode(const SourceInfo& loc, Op op, Type* type,
-              std::string_view channel_name, Direction direction,
+              std::string_view channel_name, ChannelDirection direction,
               bool has_predicate, std::string_view name, FunctionBase* function)
       : Node(op, type, loc, name, function),
         channel_name_(channel_name),
@@ -944,7 +944,7 @@ class ChannelNode : public Node {
   absl::StatusOr<ChannelRef> GetChannelRef() const;
 
   // Returns the direction this node communicates on the channel.
-  Direction direction() const { return direction_; }
+  ChannelDirection direction() const { return direction_; }
 
   // Returns the type of the data payload communicated on the channel.
   Type* GetPayloadType() const;
@@ -988,7 +988,7 @@ class ChannelNode : public Node {
 
  private:
   std::string channel_name_;
-  Direction direction_;
+  ChannelDirection direction_;
   bool has_predicate_;
 };
 
@@ -1085,14 +1085,18 @@ class RegisterWrite final : public Node {
                      "register does not have an existing load enable operand.");
   }
 
-  absl::Status AddOrReplaceReset(Node* new_reset_node, Reset new_reset_info) {
-    reg_->UpdateReset(new_reset_info);
-    if (!has_reset_) {
-      AddOperand(new_reset_node);
-      has_reset_ = true;
+  absl::Status SetReset(std::optional<Node*> reset) {
+    // Clear existing reset.
+    if (has_reset_) {
+      XLS_RETURN_IF_ERROR(RemoveOptionalOperand(*reset_operand_number()));
+      has_reset_ = false;
+    }
+    if (!reset.has_value()) {
       return absl::OkStatus();
     }
-    return ReplaceOperandNumber(*reset_operand_number(), new_reset_node);
+    has_reset_ = true;
+    AddOperand(reset.value());
+    return absl::OkStatus();
   }
 
   absl::StatusOr<int64_t> load_enable_operand_number() const {

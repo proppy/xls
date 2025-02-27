@@ -951,7 +951,7 @@ ColonRef::ColonRef(Module* owner, Span span, Subject subject, std::string attr,
 
 ColonRef::~ColonRef() = default;
 
-std::optional<Import*> ColonRef::ResolveImportSubject() const {
+std::optional<ImportSubject> ColonRef::ResolveImportSubject() const {
   if (!std::holds_alternative<NameRef*>(subject_)) {
     return std::nullopt;
   }
@@ -962,6 +962,11 @@ std::optional<Import*> ColonRef::ResolveImportSubject() const {
   }
   const auto* name_def = std::get<const NameDef*>(any_name_def);
   AstNode* definer = name_def->definer();
+
+  if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer)) {
+    return use_tree_entry;
+  }
+
   Import* import = dynamic_cast<Import*>(definer);
   if (import == nullptr) {
     return std::nullopt;
@@ -1073,10 +1078,14 @@ std::string MemberTypeAnnotation::ToString() const {
 
 ElementTypeAnnotation::ElementTypeAnnotation(
     Module* owner, const TypeAnnotation* container_type,
-    std::optional<const Number*> tuple_index)
+    std::optional<const Number*> tuple_index,
+    bool allow_bit_vector_destructuring)
     : TypeAnnotation(owner, container_type->span()),
       container_type_(container_type),
-      tuple_index_(tuple_index) {}
+      tuple_index_(tuple_index),
+      allow_bit_vector_destructuring_(allow_bit_vector_destructuring) {
+  CHECK(!(allow_bit_vector_destructuring_ && tuple_index_.has_value()));
+}
 
 std::string ElementTypeAnnotation::ToString() const {
   return absl::StrCat(
@@ -1832,10 +1841,10 @@ std::string Unop::ToStringInternal() const {
   if (WeakerThan(operand_->GetPrecedence(), GetPrecedenceWithoutParens())) {
     Parenthesize(&operand);
   }
-  return absl::StrFormat("%s%s", UnopKindToString(unop_kind_), operand);
+  return absl::StrFormat("%s%s", UnopKindFormat(unop_kind_), operand);
 }
 
-std::string UnopKindToString(UnopKind k) {
+std::string UnopKindFormat(UnopKind k) {
   switch (k) {
     case UnopKind::kInvert:
       return "!";
@@ -2607,7 +2616,8 @@ std::string Number::ToStringInternal() const {
 
 std::string Number::ToStringNoType() const { return text_; }
 
-absl::StatusOr<bool> Number::FitsInType(int64_t bit_count) const {
+absl::StatusOr<bool> Number::FitsInType(int64_t bit_count,
+                                        bool is_signed) const {
   XLS_RET_CHECK_GE(bit_count, 0);
   switch (number_kind_) {
     case NumberKind::kBool:
@@ -2615,8 +2625,10 @@ absl::StatusOr<bool> Number::FitsInType(int64_t bit_count) const {
     case NumberKind::kCharacter:
       return bit_count >= CHAR_BIT;
     case NumberKind::kOther: {
-      XLS_ASSIGN_OR_RETURN(auto sm, GetSignAndMagnitude(text_));
-      auto [sign, bits] = sm;
+      XLS_ASSIGN_OR_RETURN((auto [sign, bits]), GetSignAndMagnitude(text_));
+      if (is_signed && bits.msb() && sign == Sign::kPositive) {
+        return bit_count > bits.bit_count();
+      }
       return bit_count >= bits.bit_count();
     }
   }
@@ -2639,8 +2651,7 @@ absl::StatusOr<Bits> Number::GetBits(int64_t bit_count,
       return bits_ops::ZeroExtend(result, bit_count);
     }
     case NumberKind::kOther: {
-      XLS_ASSIGN_OR_RETURN(auto sm, GetSignAndMagnitude(text_));
-      auto [sign, bits] = sm;
+      XLS_ASSIGN_OR_RETURN((auto [sign, bits]), GetSignAndMagnitude(text_));
       XLS_RET_CHECK_GE(bits.bit_count(), 0);
       XLS_RET_CHECK(bit_count >= bits.bit_count()) << absl::StreamFormat(
           "Internal error: %s Cannot fit number value %s in %d bits; %d "
@@ -2648,7 +2659,7 @@ absl::StatusOr<Bits> Number::GetBits(int64_t bit_count,
           span().ToString(file_table), text_, bit_count, bits.bit_count(),
           ToString());
       bits = bits_ops::ZeroExtend(bits, bit_count);
-      if (sign) {
+      if (sign == Sign::kNegative) {
         bits = bits_ops::Negate(bits);
       }
       return bits;
@@ -2673,6 +2684,7 @@ std::string TypeAlias::ToString() const {
       "%s%stype %s = %s;", MakeExternTypeAttr(extern_type_name_),
       is_public_ ? "pub " : "", identifier(), type_annotation_.ToString());
 }
+
 // -- class Array
 
 Array::~Array() = default;
@@ -2713,5 +2725,9 @@ Span ExprOrTypeSpan(const ExprOrType& expr_or_type) {
       },
       expr_or_type);
 }
+
+// class GenericTypeAnnotation
+
+GenericTypeAnnotation::~GenericTypeAnnotation() = default;
 
 }  // namespace xls::dslx

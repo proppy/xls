@@ -35,14 +35,18 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/substitute.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/ast_node_visitor_with_default.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
 namespace xls::dslx {
 namespace {
@@ -136,6 +140,7 @@ struct NodeData {
   size_t order_added;
   std::optional<const TypeAnnotation*> type_annotation;
   std::optional<const InferenceVariable*> type_variable;
+  std::optional<StartAndWidthExprs> slice_start_and_width_exprs;
 };
 
 // The mutable data for a `ParametricContext` in an `InferenceTable`.
@@ -162,8 +167,10 @@ class InferenceTableImpl : public InferenceTable {
   explicit InferenceTableImpl(Module& module) : module_(module) {}
 
   absl::StatusOr<const NameRef*> DefineInternalVariable(
-      InferenceVariableKind kind, AstNode* definer,
-      std::string_view name) override {
+      InferenceVariableKind kind, AstNode* definer, std::string_view name,
+      std::optional<const TypeAnnotation*> declaration_annotation) override {
+    VLOG(6) << "DefineInternalVariable of kind " << (int)kind << " with name "
+            << name << " and definer: " << definer->ToString();
     CHECK(definer->GetSpan().has_value());
     Span span = *definer->GetSpan();
     const NameDef* name_def =
@@ -172,11 +179,20 @@ class InferenceTableImpl : public InferenceTable {
         module_.Make<NameRef>(span, std::string(name), name_def);
     AddVariable(name_def, std::make_unique<InferenceVariable>(
                               definer, name_ref, kind, /*parametric=*/false));
+    if (declaration_annotation.has_value()) {
+      CHECK_NE(*declaration_annotation, nullptr);
+      XLS_ASSIGN_OR_RETURN(const InferenceVariable* variable,
+                           GetVariable(name_ref));
+      declaration_type_annotations_.emplace(variable, *declaration_annotation);
+    }
     return name_ref;
   }
 
   absl::StatusOr<const NameRef*> DefineParametricVariable(
       const ParametricBinding& binding) override {
+    VLOG(6) << "DefineParametricVariable of type "
+            << binding.type_annotation()->ToString() << " with name "
+            << binding.name_def()->ToString();
     XLS_ASSIGN_OR_RETURN(
         InferenceVariableKind kind,
         TypeAnnotationToInferenceVariableKind(binding.type_annotation()));
@@ -320,13 +336,15 @@ class InferenceTableImpl : public InferenceTable {
     auto_literal_annotations_.insert(annotation);
   }
 
-  bool IsAutoLiteral(const TypeAnnotation* annotation) override {
+  bool IsAutoLiteral(const TypeAnnotation* annotation) const override {
     return auto_literal_annotations_.contains(annotation);
   }
 
   absl::Status SetTypeVariable(const AstNode* node,
                                const NameRef* type) override {
     XLS_ASSIGN_OR_RETURN(InferenceVariable * variable, GetVariable(type));
+    VLOG(6) << "SetTypeVariable node " << node->ToString() << "; type "
+            << type->ToString() << " variable " << variable->ToString();
     if (variable->kind() != InferenceVariableKind::kType) {
       return absl::InvalidArgumentError(
           absl::Substitute("Setting the type of $0 to non-type variable: $1",
@@ -355,6 +373,16 @@ class InferenceTableImpl : public InferenceTable {
         it->second.type_variable;
     return variable.has_value() ? std::make_optional((*variable)->name_ref())
                                 : std::nullopt;
+  }
+
+  absl::StatusOr<std::optional<const TypeAnnotation*>>
+  GetDeclarationTypeAnnotation(const NameRef* ref) const override {
+    XLS_ASSIGN_OR_RETURN(const InferenceVariable* variable, GetVariable(ref));
+    const auto it = declaration_type_annotations_.find(variable);
+    if (it == declaration_type_annotations_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
   }
 
   absl::StatusOr<std::vector<const TypeAnnotation*>>
@@ -393,23 +421,58 @@ class InferenceTableImpl : public InferenceTable {
                                           : std::make_optional(it->second);
   }
 
+  absl::StatusOr<AstNode*> Clone(const AstNode* input,
+                                 CloneReplacer replacer) override {
+    absl::flat_hash_map<const AstNode*, AstNode*> all_pairs;
+    XLS_ASSIGN_OR_RETURN(
+        all_pairs,
+        CloneAstAndGetAllPairs(
+            input, ChainCloneReplacers(&PreserveTypeDefinitionsReplacer,
+                                       std::move(replacer))));
+    for (const auto& [old_node, new_node] : all_pairs) {
+      if (old_node != new_node) {
+        const auto it = node_data_.find(old_node);
+        if (it != node_data_.end()) {
+          NodeData copy = it->second;
+          node_data_.emplace(new_node, std::move(copy));
+        }
+      }
+    }
+    return all_pairs.at(input);
+  }
+
   std::string ToString() const override {
     std::string result;
     absl::flat_hash_map<const AstNode*, std::vector<const ParametricContext*>>
         contexts_per_node;
+    auto annotation_to_string = [this](std::string_view indent,
+                                       const TypeAnnotation* annotation) {
+      return absl::Substitute(
+          std::string(indent) + "Annotation: $0; Auto literal: $1\n",
+          annotation->ToString(),
+          auto_literal_annotations_.contains(annotation));
+    };
+
     for (const auto& context : parametric_contexts_) {
       contexts_per_node[context->node()].push_back(context.get());
     }
     for (const auto& [node, data] : node_data_) {
       absl::StrAppendFormat(&result, "Node: %s\n", node->ToString());
       absl::StrAppendFormat(&result, "  Address: 0x%x\n", (uint64_t)node);
+      absl::StrAppendFormat(&result, "  Module: %s\n", node->owner()->name());
       if (data.type_variable.has_value()) {
         absl::StrAppendFormat(&result, "  Variable: %s\n",
                               (*data.type_variable)->name());
       }
       if (data.type_annotation.has_value()) {
-        absl::StrAppendFormat(&result, "  Annotation: %s\n",
-                              (*data.type_annotation)->ToString());
+        absl::StrAppend(&result,
+                        annotation_to_string("  ", *data.type_annotation));
+      }
+      if (data.slice_start_and_width_exprs.has_value()) {
+        absl::StrAppend(&result, "  Start: %s\n",
+                        data.slice_start_and_width_exprs->start->ToString());
+        absl::StrAppend(&result, "  Width: %s\n",
+                        data.slice_start_and_width_exprs->width->ToString());
       }
       const std::vector<const ParametricContext*>& contexts =
           contexts_per_node[node];
@@ -425,14 +488,16 @@ class InferenceTableImpl : public InferenceTable {
       absl::StrAppendFormat(&result, "Variable: %s\n", variable->name());
       absl::StrAppendFormat(&result, "  NameDef address: 0x%x\n",
                             (uint64_t)(name_def));
+      absl::StrAppendFormat(&result, "  Module: %s\n",
+                            variable->definer()->owner()->name());
       const auto annotations =
           type_annotations_per_type_variable_.find(variable.get());
       if (annotations != type_annotations_per_type_variable_.end() &&
           !annotations->second.empty()) {
         absl::StrAppendFormat(&result, "  Annotations:\n");
         for (int i = 0; i < annotations->second.size(); i++) {
-          absl::StrAppendFormat(&result, "    %d: %s\n", i,
-                                annotations->second[i]->ToString());
+          absl::StrAppend(&result,
+                          annotation_to_string("    ", annotations->second[i]));
         }
       }
       for (const auto& context : parametric_contexts_) {
@@ -460,6 +525,20 @@ class InferenceTableImpl : public InferenceTable {
       }
     }
     return result;
+  }
+
+  absl::Status SetSliceStartAndWidthExprs(
+      const AstNode* node, StartAndWidthExprs start_and_width) override {
+    return MutateAndCheckNodeData(node, [&](NodeData& data) {
+      data.slice_start_and_width_exprs = start_and_width;
+    });
+  }
+
+  std::optional<StartAndWidthExprs> GetSliceStartAndWidthExprs(
+      const AstNode* node) override {
+    const auto it = node_data_.find(node);
+    return it == node_data_.end() ? std::nullopt
+                                  : it->second.slice_start_and_width_exprs;
   }
 
  private:
@@ -523,6 +602,9 @@ class InferenceTableImpl : public InferenceTable {
   absl::flat_hash_map<const InferenceVariable*,
                       std::vector<const TypeAnnotation*>>
       type_annotations_per_type_variable_;
+  // The type annotations that were declared by the user.
+  absl::flat_hash_map<const InferenceVariable*, const TypeAnnotation*>
+      declaration_type_annotations_;
   // The `AstNode` objects that have associated data.
   absl::flat_hash_map<const AstNode*, NodeData> node_data_;
   // Parametric contexts and the corresponding information about parametric
@@ -544,6 +626,25 @@ InferenceTable::~InferenceTable() = default;
 
 std::unique_ptr<InferenceTable> InferenceTable::Create(Module& module) {
   return std::make_unique<InferenceTableImpl>(module);
+}
+
+absl::StatusOr<Number*> MakeTypeCheckedNumber(
+    Module& module, InferenceTable& table, const Span& span,
+    const InterpValue& value, const TypeAnnotation* type_annotation) {
+  VLOG(5) << "Creating type-checked number: " << value.ToString()
+          << " of type: " << type_annotation->ToString();
+  Number* number = module.Make<Number>(span, value.ToString(/*humanize=*/true),
+                                       NumberKind::kOther, nullptr);
+  XLS_RETURN_IF_ERROR(table.SetTypeAnnotation(number, type_annotation));
+  return number;
+}
+
+// Variant that takes a raw `int64_t` value for the number.
+absl::StatusOr<Number*> MakeTypeCheckedNumber(
+    Module& module, InferenceTable& table, const Span& span, int64_t value,
+    const TypeAnnotation* type_annotation) {
+  return MakeTypeCheckedNumber(module, table, span, InterpValue::MakeS64(value),
+                               type_annotation);
 }
 
 }  // namespace xls::dslx

@@ -333,8 +333,10 @@ absl::StatusOr<bool> StillFailsHelper(
     std::unique_ptr<OptimizationCompoundPass> pipeline =
         CreateOptimizationPassPipeline();
     PassResults results;
+    OptimizationContext context;
     XLS_RETURN_IF_ERROR(
-        pipeline->Run(package.get(), OptimizationPassOptions(), &results)
+        pipeline
+            ->Run(package.get(), OptimizationPassOptions(), &results, &context)
             .status());
 
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<FunctionJit> opt_jit,
@@ -425,19 +427,8 @@ absl::StatusOr<bool> RemoveDeadParameters(FunctionBase* f) {
   if (f->IsProc()) {
     Proc* p = f->AsProcOrDie();
     absl::flat_hash_set<StateElement*> dead_state_elements;
-    absl::flat_hash_set<StateElement*> invariant_state_elements;
-    for (StateElement* state_element : p->StateElements()) {
-      StateRead* state_read = p->GetStateRead(state_element);
-      if (state_read->IsDead()) {
-        dead_state_elements.insert(state_element);
-      }
-      XLS_ASSIGN_OR_RETURN(int64_t index,
-                           p->GetStateElementIndex(state_element));
-      if (state_read == p->GetNextStateElement(index)) {
-        invariant_state_elements.insert(state_element);
-      }
-    }
-
+    absl::flat_hash_set<StateElement*> invariant_state_elements(
+        p->StateElements().begin(), p->StateElements().end());
     for (Next* next : p->next_values()) {
       if (next->value() != next->state_read()) {
         // This state param is not actually invariant.
@@ -581,20 +572,6 @@ absl::StatusOr<SimplificationResult> ReplaceImplicitUse(Node* node,
     XLS_RETURN_IF_ERROR(f->set_return_value(replacement));
     return SimplificationResult::kDidChange;
   }
-  if (fb->IsProc()) {
-    Proc* p = fb->AsProcOrDie();
-    SimplificationResult changed = SimplificationResult::kDidNotChange;
-    if (!node->GetType()->IsEqualTo(replacement->GetType())) {
-      return SimplificationResult::kDidNotChange;
-    }
-    for (int64_t i = 0; i < p->GetStateElementCount(); ++i) {
-      if (p->GetNextStateElement(i) == node) {
-        XLS_RETURN_IF_ERROR(p->SetNextStateElement(i, replacement));
-        changed = SimplificationResult::kDidChange;
-      }
-    }
-    return changed;
-  }
   return SimplificationResult::kDidNotChange;
 }
 
@@ -604,9 +581,8 @@ std::vector<Node*> ImplicitlyUsed(FunctionBase* fb) {
     return {f->return_value()};
   }
   if (fb->IsProc()) {
-    Proc* p = fb->AsProcOrDie();
-    absl::Span<Node* const> next_state = p->NextState();
-    return std::vector<Node*>(next_state.begin(), next_state.end());
+    // Procs have no implicit uses.
+    return {};
   }
   LOG(FATAL) << "ImplicitlyUsed only supports functions and procs";
 }
@@ -818,9 +794,11 @@ absl::StatusOr<SimplificationResult> RunRandomPass(
 
   int64_t pass_no = absl::Uniform<int64_t>(rng, 0, passes.size());
   PassResults results;
-  XLS_ASSIGN_OR_RETURN(bool changed,
-                       passes.at(pass_no)->Run(
-                           f->package(), OptimizationPassOptions(), &results));
+  OptimizationContext context;
+  XLS_ASSIGN_OR_RETURN(
+      bool changed,
+      passes.at(pass_no)->Run(f->package(), OptimizationPassOptions(), &results,
+                              &context));
   if (changed) {
     *which_transform = passes.at(pass_no)->short_name();
     return SimplificationResult::kDidChange;
@@ -1281,13 +1259,15 @@ absl::Status CleanUp(FunctionBase* f, bool can_remove_params) {
   DeadCodeEliminationPass dce;
   DeadFunctionEliminationPass dfe;
   PassResults results;
-  XLS_RETURN_IF_ERROR(
-      dce.Run(f->package(), OptimizationPassOptions(), &results).status());
+  XLS_RETURN_IF_ERROR(dce.Run(f->package(), OptimizationPassOptions(), &results,
+                              /*context=*/nullptr)
+                          .status());
   if (can_remove_params) {
     XLS_RETURN_IF_ERROR(RemoveDeadParameters(f).status());
   }
-  XLS_RETURN_IF_ERROR(
-      dfe.Run(f->package(), OptimizationPassOptions(), &results).status());
+  XLS_RETURN_IF_ERROR(dfe.Run(f->package(), OptimizationPassOptions(), &results,
+                              /*context=*/nullptr)
+                          .status());
   return absl::OkStatus();
 }
 

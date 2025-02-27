@@ -29,7 +29,6 @@
 #include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
 #include "xls/passes/pass_base.h"
@@ -63,7 +62,7 @@ absl::Span<Node* const> GetOperandsForCse(
 
 }  // namespace
 
-absl::StatusOr<bool> RunCse(FunctionBase* f,
+absl::StatusOr<bool> RunCse(FunctionBase* f, OptimizationContext* context,
                             absl::flat_hash_map<Node*, Node*>* replacements,
                             bool common_literals) {
   // To improve efficiency, bucket potentially common nodes together. The
@@ -84,12 +83,20 @@ absl::StatusOr<bool> RunCse(FunctionBase* f,
   bool changed = false;
   absl::flat_hash_map<int64_t, std::vector<Node*>> node_buckets;
   node_buckets.reserve(f->node_count());
-  for (Node* node : TopoSort(f)) {
+  for (Node* node : context->TopoSort(f)) {
     if (OpIsSideEffecting(node->op())) {
       continue;
     }
 
     if (node->Is<Literal>() && !common_literals) {
+      continue;
+    }
+
+    // Normally, dead nodes are removed by the DCE pass. However, if the node is
+    // (e.g.) an invoke, DCE won't touch it, waiting for inlining to remove
+    // it... and if we try to replace it, we'll think we changed the IR when we
+    // actually didn't.
+    if (node->IsDead()) {
       continue;
     }
 
@@ -128,8 +135,8 @@ absl::StatusOr<bool> RunCse(FunctionBase* f,
 
 absl::StatusOr<bool> CsePass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
-  return RunCse(f, nullptr, common_literals_);
+    PassResults* results, OptimizationContext* context) const {
+  return RunCse(f, context, nullptr, common_literals_);
 }
 
 REGISTER_OPT_PASS(CsePass);

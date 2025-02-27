@@ -764,8 +764,9 @@ BValue convertOp(CountedForOp counted_for_op, TranslationState& state,
     auto apfloat = float_attr.getValue();
     auto apint = apfloat.bitcastToAPInt();
     llvm::APInt sign = apint.getHiBits(1).trunc(1);
-    llvm::APInt mantissa = apint.extractBits(mantissa_width, exponent_width);
-    llvm::APInt exponent = apint.extractBits(exponent_width, 0);
+    llvm::APInt exponent = apint.extractBits(exponent_width, mantissa_width);
+    llvm::APInt mantissa = apint.extractBits(mantissa_width, 0);
+
     return ::xls::Value::Tuple({
         ::xls::Value(convertAPInt(sign)),
         ::xls::Value(convertAPInt(exponent)),
@@ -781,8 +782,9 @@ BValue convertOp(ConstantScalarOp op, const TranslationState& state,
   if (auto int_attr = dyn_cast<IntegerAttr>(op.getValue())) {
     // TODO(jmolloy): ConstantScalarOp always has I64Attr regardless of the
     // type, so we need special handling here.
-    auto int_type = cast<IntegerType>(op.getType());
-    auto int_val = int_attr.getValue().zextOrTrunc(int_type.getWidth());
+    auto int_type = dyn_cast<IntegerType>(op.getType());
+    unsigned bit_width = int_type ? int_type.getWidth() : /*IndexType*/ 32u;
+    auto int_val = int_attr.getValue().zextOrTrunc(bit_width);
     return fb.Literal(convertAPInt(int_val), state.getLoc(op));
   }
   return fb.Literal(convertConstantAttr(op.getValue()), state.getLoc(op));
@@ -984,8 +986,6 @@ FailureOr<PackageInfo> importDslxInstantiation(
   ::llvm::StringRef path = file_import_op.getFilename();
 
   std::string module_name = "imported_module";
-  std::string_view stdlib_path = ::xls::GetDefaultDslxStdlibPath();
-  std::vector<std::filesystem::path> additional_search_paths = {};
   absl::StatusOr<std::string> package_string_or;
 
   // Note: this is not bullet proof. The experience if these are wrong would
@@ -1006,9 +1006,12 @@ FailureOr<PackageInfo> importDslxInstantiation(
 
   // Note: using a different pathname here else XLS considers this a circular
   // import.
-  package_string_or =
-      ::xls::ConvertDslxToIr(dslx, "<instantiated module>", module_name,
-                             stdlib_path, additional_search_paths);
+  const ::xls::ConvertDslxToIrOptions options{
+      .dslx_stdlib_path = ::xls::GetDefaultDslxStdlibPath(),
+      .warnings_as_errors = false,
+  };
+  package_string_or = ::xls::ConvertDslxToIr(dslx, "<instantiated module>",
+                                             module_name, options);
   if (!package_string_or.ok()) {
     llvm::errs() << "Failed to convert DSLX to IR: "
                  << package_string_or.status().message() << "\n";
@@ -1769,8 +1772,12 @@ absl::StatusOr<std::shared_ptr<const Package>> DslxPackageCache::import(
   if (it != cache.end()) {
     return it->second;
   }
-  absl::StatusOr<std::string> package_string_or = ::xls::ConvertDslxPathToIr(
-      fileName, ::xls::GetDefaultDslxStdlibPath(), {});
+  const ::xls::ConvertDslxToIrOptions options{
+      .dslx_stdlib_path = ::xls::GetDefaultDslxStdlibPath(),
+      .warnings_as_errors = false,
+  };
+  absl::StatusOr<std::string> package_string_or =
+      ::xls::ConvertDslxPathToIr(fileName, options);
   if (!package_string_or.ok()) {
     return package_string_or.status();
   }

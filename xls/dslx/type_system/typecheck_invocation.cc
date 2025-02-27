@@ -64,8 +64,7 @@ namespace xls::dslx {
 
 static absl::StatusOr<std::unique_ptr<DeduceCtx>> GetImportedDeduceCtx(
     DeduceCtx* ctx, const Invocation* invocation,
-    const ParametricEnv& caller_bindings,
-    std::variant<UseTreeEntry*, Import*> import_key) {
+    const ParametricEnv& caller_bindings, ImportSubject import_key) {
   auto it = ctx->type_info()->GetRootImports().find(import_key);
   XLS_RET_CHECK(it != ctx->type_info()->GetRootImports().end())
       << "Could not find import for key: " << ToAstNode(import_key)->ToString();
@@ -217,12 +216,6 @@ TypecheckParametricBuiltinInvocation(DeduceCtx* ctx,
     arg_spans.push_back(arg->span());
   }
 
-  if ((callee_name == "fail!" || callee_name == "assert!" ||
-       callee_name == "cover!") &&
-      caller != nullptr) {
-    ctx->type_info()->NoteRequiresImplicitToken(*caller, true);
-  }
-
   VLOG(5) << "Instantiating builtin parametric: "
           << callee_nameref->identifier();
   XLS_ASSIGN_OR_RETURN(
@@ -319,6 +312,21 @@ TypecheckParametricBuiltinInvocation(DeduceCtx* ctx,
         invocation, InterpValue::MakeU32(static_cast<int32_t>(array_size)));
   }
 
+  // bit_count and element_count are similar to array_size, but uses the
+  // parametric argument rather than a value.
+  if (callee_nameref->identifier() == "bit_count" ||
+      callee_nameref->identifier() == "element_count") {
+    auto* annotation =
+        std::get<TypeAnnotation*>(invocation->explicit_parametrics()[0]);
+    XLS_ASSIGN_OR_RETURN(std::unique_ptr<Type> type,
+                         ctx->DeduceAndResolve(annotation));
+    XLS_ASSIGN_OR_RETURN(InterpValue value,
+                         callee_nameref->identifier() == "element_count"
+                             ? GetElementCountAsInterpValue(type.get())
+                             : GetBitCountAsInterpValue(type.get()));
+    ctx->type_info()->NoteConstExpr(invocation, value);
+  }
+
   if (callee_nameref->identifier() == "cover!") {
     XLS_RETURN_IF_ERROR(TypecheckCoverBuiltinInvocation(ctx, invocation));
   }
@@ -333,10 +341,10 @@ TypecheckParametricBuiltinInvocation(DeduceCtx* ctx,
 // Inspects to see whether the given `ref` is a reference to an externally
 // defined entity -- if so, returns the "import key" we can use to resolve the
 // module information for it.
-static std::optional<std::variant<UseTreeEntry*, Import*>> IsExternRef(
-    Expr& ref, Module& current_module) {
+static std::optional<ImportSubject> IsExternRef(Expr& ref,
+                                                Module& current_module) {
   if (auto* colon_ref = dynamic_cast<ColonRef*>(&ref); colon_ref != nullptr) {
-    std::optional<Import*> import = colon_ref->ResolveImportSubject();
+    std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
     if (import.has_value()) {
       return import.value();
     }

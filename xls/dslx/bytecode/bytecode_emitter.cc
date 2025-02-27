@@ -714,6 +714,34 @@ absl::Status BytecodeEmitter::HandleBuiltinWideningCast(
   return absl::OkStatus();
 }
 
+absl::Status BytecodeEmitter::HandleBuiltinBitCount(const Invocation* node) {
+  VLOG(5) << "BytecodeEmitter::HandleInvocation - BitCount @ "
+          << node->span().ToString(file_table());
+
+  const auto* annotation =
+      std::get<TypeAnnotation*>(node->explicit_parametrics()[0]);
+  XLS_ASSIGN_OR_RETURN(Type * type, GetTypeOfNode(annotation, type_info_));
+  XLS_ASSIGN_OR_RETURN(InterpValue bit_count, GetBitCountAsInterpValue(type));
+  bytecode_.push_back(
+      Bytecode(node->span(), Bytecode::Op::kLiteral, bit_count));
+  return absl::OkStatus();
+}
+
+absl::Status BytecodeEmitter::HandleBuiltinElementCount(
+    const Invocation* node) {
+  VLOG(5) << "BytecodeEmitter::HandleInvocation - ElementCount @ "
+          << node->span().ToString(file_table());
+
+  const auto* annotation =
+      std::get<TypeAnnotation*>(node->explicit_parametrics()[0]);
+  XLS_ASSIGN_OR_RETURN(Type * type, GetTypeOfNode(annotation, type_info_));
+  XLS_ASSIGN_OR_RETURN(InterpValue element_count,
+                       GetElementCountAsInterpValue(type));
+  bytecode_.push_back(
+      Bytecode(node->span(), Bytecode::Op::kLiteral, element_count));
+  return absl::OkStatus();
+}
+
 absl::Status BytecodeEmitter::HandleChannelDecl(const ChannelDecl* node) {
   // Channels are created as constexpr values during type deduction/constexpr
   // evaluation, since they're concrete values that need to be shared amongst
@@ -1075,40 +1103,46 @@ absl::Status BytecodeEmitter::HandleInvocation(const Invocation* node) {
       return absl::OkStatus();
     }
 
+    if (name_ref->identifier() == "bit_count") {
+      return HandleBuiltinBitCount(node);
+    }
     if (name_ref->identifier() == "decode") {
       return HandleBuiltinDecode(node);
     }
-
+    if (name_ref->identifier() == "checked_cast") {
+      return HandleBuiltinCheckedCast(node);
+    }
+    if (name_ref->identifier() == "element_count") {
+      return HandleBuiltinElementCount(node);
+    }
     if (name_ref->identifier() == "widening_cast") {
       return HandleBuiltinWideningCast(node);
     }
 
-    if (name_ref->identifier() == "checked_cast") {
-      return HandleBuiltinCheckedCast(node);
+    if (name_ref->identifier() == "join") {
+      return HandleBuiltinJoin(node);
     }
-    if (name_ref->identifier() == "send") {
-      return HandleBuiltinSend(node);
+    if (name_ref->identifier() == "token") {
+      return HandleBuiltinToken(node);
     }
-    if (name_ref->identifier() == "send_if") {
-      return HandleBuiltinSendIf(node);
-    }
+
     if (name_ref->identifier() == "recv") {
       return HandleBuiltinRecv(node);
     }
     if (name_ref->identifier() == "recv_if") {
       return HandleBuiltinRecvIf(node);
     }
-    if (name_ref->identifier() == "recv_non_blocking") {
-      return HandleBuiltinRecvNonBlocking(node);
-    }
     if (name_ref->identifier() == "recv_if_non_blocking") {
       return HandleBuiltinRecvIfNonBlocking(node);
     }
-    if (name_ref->identifier() == "join") {
-      return HandleBuiltinJoin(node);
+    if (name_ref->identifier() == "recv_non_blocking") {
+      return HandleBuiltinRecvNonBlocking(node);
     }
-    if (name_ref->identifier() == "token") {
-      return HandleBuiltinToken(node);
+    if (name_ref->identifier() == "send") {
+      return HandleBuiltinSend(node);
+    }
+    if (name_ref->identifier() == "send_if") {
+      return HandleBuiltinSendIf(node);
     }
   }
 

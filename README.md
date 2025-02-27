@@ -123,7 +123,7 @@ Please see the two corresponding command lines below -- we start by assuming
 ~/xls$ # Note we're going to tell Ubuntu that `/usr/bin/env python` is actually python3
 ~/xls$ # here, since that has not been the case by default on past Ubuntus.
 ~/xls$ # This is important. Without this step, you may experience cryptic error messages:
-~/xls$ sudo apt install python3-distutils python3-dev libtinfo5 python-is-python3
+~/xls$ sudo apt install python3-dev libtinfo6 python-is-python3
 
 ~/xls$ # Now build/test in optimized build mode.
 ~/xls$ # If you don't plan on using the C++ front-end, which is not strictly
@@ -343,6 +343,7 @@ discussions](https://github.com/google/xls/discussions)!
 *   [Mark Heffernan](https://github.com/meheff)
 *   [Paul Rigge](https://github.com/grebe)
 *   [Per Grön](https://github.com/per-gron)
+*   [Philipp Schilk](https://github.com/schilkp)
 *   [Ravi Nanavati](https://github.com/nanavati)
 *   [Rebecca Chen (Pytype)](https://github.com/rchen152)
 *   [Remy Goldschmidt](https://github.com/taktoa)

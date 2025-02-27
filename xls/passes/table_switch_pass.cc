@@ -36,7 +36,6 @@
 #include "xls/ir/node.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/value.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
@@ -417,12 +416,12 @@ absl::StatusOr<std::optional<Value>> LinksToTable(
 
 absl::StatusOr<bool> TableSwitchPass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   StatelessQueryEngine query_engine;
 
   bool changed = false;
   absl::flat_hash_set<Node*> transformed;
-  for (Node* node : ReverseTopoSort(f)) {
+  for (Node* node : context->ReverseTopoSort(f)) {
     VLOG(3) << "Considering node: " << node->ToString();
     if (transformed.contains(node)) {
       VLOG(3) << absl::StreamFormat("Already transformed %s", node->GetName());

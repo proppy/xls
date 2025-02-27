@@ -147,7 +147,8 @@ class IrRunner : public AbstractParsedTestRunner {
     // entering livelock we run DFE on the package.
     DeadFunctionEliminationPass dfe;
     PassResults pr;
-    XLS_RETURN_IF_ERROR(dfe.Run(package, {}, &pr).status());
+    XLS_RETURN_IF_ERROR(
+        dfe.Run(package, {}, &pr, /*context=*/nullptr).status());
     // Get the corresponding entries.
     XLS_ASSIGN_OR_RETURN(auto* top, package->GetTopAsProc());
     XLS_ASSIGN_OR_RETURN(
@@ -204,7 +205,7 @@ absl::StatusOr<std::unique_ptr<AbstractParsedTestRunner>> MakeRunner(
       .emit_fail_as_assert = true,
       .verify_ir = false,
       .warnings_as_errors = false,
-      .enabled_warnings = kNoWarningsSet,
+      .warnings = kNoWarningsSet,
       .convert_tests = true,
   };
   absl::flat_hash_map<std::string, std::unique_ptr<Package>> packages;

@@ -34,7 +34,6 @@
 #include "xls/ir/node_util.h"
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/value.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
@@ -328,8 +327,8 @@ absl::StatusOr<std::map<int64_t, int64_t>> GetBitRangeUnionOfInputConcats(
 //   0xab & {x, y} => {x & 0xa, x & 0xb}
 //
 // Returns true if the transformation succeeded.
-absl::StatusOr<bool> TryHoistBitWiseWithConstant(Node* node,
-                                                 QueryEngine& query_engine) {
+absl::StatusOr<bool> TryHoistBitWiseWithConstant(
+    Node* node, const QueryEngine& query_engine) {
   // TODO(meheff): Handle cases where there are multiple non-literal concat
   // operands. No need to consider multiple literal operands as canonicalization
   // merges multiple literal operands of bitwise operations.
@@ -391,7 +390,7 @@ absl::StatusOr<bool> TryHoistBitWiseWithConstant(Node* node,
 // Preconditions:
 //   * All operands of the bitwise operation are concats.
 absl::StatusOr<bool> TryHoistBitWiseOperation(Node* node,
-                                              QueryEngine& query_engine) {
+                                              const QueryEngine& query_engine) {
   XLS_RET_CHECK(OpIsBitWise(node->op()));
 
   {
@@ -553,7 +552,7 @@ absl::StatusOr<bool> TryDistributeReducibleOperation(Node* node) {
 
 absl::StatusOr<bool> ConcatSimplificationPass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   StatelessQueryEngine query_engine;
 
   // For optimizations which replace concats with other concats use a worklist
@@ -577,7 +576,7 @@ absl::StatusOr<bool> ConcatSimplificationPass::RunOnFunctionBaseInternal(
   // For optimizations which optimize around concats, just iterate through once
   // and find all opportunities.
   if (options.narrowing_enabled()) {
-    for (Node* node : TopoSort(f)) {
+    for (Node* node : context->TopoSort(f)) {
       if (OpIsBitWise(node->op())) {
         XLS_ASSIGN_OR_RETURN(bool bitwise_changed,
                              TryHoistBitWiseOperation(node, query_engine));

@@ -127,13 +127,17 @@ class BaseExecutionFuzzer {
     CHECK_OK(ParseTextProtoFile(filename.value(), &msp));
     flat_input_size = absl::c_accumulate(
         msp.data_ports(), 0, [](int64_t v, const PortProto& port) {
-          if (port.direction() != DirectionProto::DIRECTION_INPUT) {
+          if (port.direction() != PORT_DIRECTION_INPUT) {
             return v;
           }
           CHECK_EQ(port.type().type_enum(), TypeProto::BITS)
               << "Non bits inputs not yet supported.";
           return v + port.width();
         });
+    if (msp.has_reset()) {
+      // Reset is a single bit input not accounted for in msp.data_ports().
+      ++flat_input_size;
+    }
 
     CHECK_EQ(oracle_block->GetOutputPorts().size(),
              test_block->GetOutputPorts().size());
@@ -160,7 +164,8 @@ class BaseExecutionFuzzer {
       absl::flat_hash_map<std::string, Value> result;
       auto it = bits.cbegin();
       for (const auto& port : msp.data_ports()) {
-        if (port.direction() == DirectionProto::DIRECTION_INPUT) {
+        CHECK(it != bits.cend());
+        if (port.direction() == PORT_DIRECTION_INPUT) {
           InlineBitmap ib(port.width());
           for (int64_t i = 0; i < port.width(); ++i) {
             CHECK(it != bits.cend());
@@ -171,6 +176,7 @@ class BaseExecutionFuzzer {
         }
       }
       if (msp.has_reset()) {
+        CHECK(it != bits.cend());
         result[msp.reset().name()] = Value(UBits(*it ? 1 : 0, 1));
       }
       return result;
@@ -288,8 +294,7 @@ class CustomScheduleFuzzer
   static std::unique_ptr<BlockContinuation> MakeContinuation(Block* b) {
     absl::flat_hash_map<std::string, Value> resets;
     for (Register* r : b->GetRegisters()) {
-      resets[r->name()] =
-          r->reset() ? r->reset()->reset_value : ZeroOfType(r->type());
+      resets[r->name()] = r->reset_value().value_or(ZeroOfType(r->type()));
     }
     if (kInterpreter) {
       return kInterpreterBlockEvaluator.NewContinuation(b, resets).value();
@@ -304,11 +309,11 @@ using JitCustomScheduleFuzzer = CustomScheduleFuzzer<false>;
 // Execute custom_schedule.x proc in interpreter for between 100 and 150 cycles.
 FUZZ_TEST_F(InterpreterCustomScheduleFuzzer, ExecuteRaw)
     .WithDomains(
-        InterpreterCustomScheduleFuzzer::InputDomain(13, /*min_cycles=*/100,
+        InterpreterCustomScheduleFuzzer::InputDomain(14, /*min_cycles=*/100,
                                                      /*max_cycles=*/150));
 // Execute custom_schedule.x proc in jit for between 100 and 5000 cycles.
 FUZZ_TEST_F(JitCustomScheduleFuzzer, ExecuteRaw)
-    .WithDomains(JitCustomScheduleFuzzer::InputDomain(13, /*min_cycles=*/100,
+    .WithDomains(JitCustomScheduleFuzzer::InputDomain(14, /*min_cycles=*/100,
                                                       /*max_cycles=*/5000));
 
 }  // namespace

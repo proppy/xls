@@ -1819,6 +1819,32 @@ TEST_F(RangeQueryEngineTest, UDiv) {
             BitsLTT(expr.node(), {Interval(UBits(1024, 20), UBits(8192, 20))}));
 }
 
+TEST_F(RangeQueryEngineTest, SDiv) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+
+  BValue x = fb.Param("x", p->GetBitsType(20));
+  BValue y = fb.Param("y", p->GetBitsType(20));
+  BValue expr = fb.SDiv(x, y);
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  RangeQueryEngine engine;
+  engine.SetIntervalSetTree(
+      x.node(),
+      BitsLTT(x.node(), {Interval(UBits(16384, 20), UBits(32768, 20))}));
+  engine.SetIntervalSetTree(
+      y.node(), BitsLTT(y.node(), {Interval(UBits(4, 20), UBits(16, 20)),
+                                   Interval(SBits(-16, 20), SBits(-4, 20))}));
+  XLS_ASSERT_OK(engine.Populate(f));
+
+  EXPECT_EQ(
+      engine.GetIntervalSetTree(expr.node()),
+      BitsLTT(expr.node(), {
+                               Interval(UBits(1024, 20), UBits(8192, 20)),
+                               Interval(SBits(-8192, 20), SBits(-1024, 20)),
+                           }));
+}
+
 TEST_F(RangeQueryEngineTest, UGe) {
   auto p = CreatePackage();
   FunctionBuilder fb(TestName(), p.get());
@@ -1902,7 +1928,7 @@ TEST_F(RangeQueryEngineTest, UGt) {
   XLS_ASSERT_OK(engine.Populate(f));
   EXPECT_EQ("0b1", engine.ToString(expr.node()));
 
-  // When the interval sets are precise and equal, returns unknown.
+  // When the interval sets are precise and equal, returns false.
   engine = RangeQueryEngine();
   engine.SetIntervalSetTree(
       x.node(), BitsLTT(x.node(), {
@@ -1913,7 +1939,7 @@ TEST_F(RangeQueryEngineTest, UGt) {
                                       Interval(UBits(200, 20), UBits(200, 20)),
                                   }));
   XLS_ASSERT_OK(engine.Populate(f));
-  EXPECT_EQ("0bX", engine.ToString(expr.node()));
+  EXPECT_EQ("0b0", engine.ToString(expr.node()));
 
   // When the interval sets are disjoint and less than, returns false.
   engine = RangeQueryEngine();
@@ -2024,7 +2050,7 @@ TEST_F(RangeQueryEngineTest, ULt) {
   XLS_ASSERT_OK(engine.Populate(f));
   EXPECT_EQ("0b0", engine.ToString(expr.node()));
 
-  // When the interval sets are precise and equal, returns unknown.
+  // When the interval sets are precise and equal, returns false.
   engine = RangeQueryEngine();
   engine.SetIntervalSetTree(
       x.node(), BitsLTT(x.node(), {
@@ -2035,7 +2061,7 @@ TEST_F(RangeQueryEngineTest, ULt) {
                                       Interval(UBits(200, 20), UBits(200, 20)),
                                   }));
   XLS_ASSERT_OK(engine.Populate(f));
-  EXPECT_EQ("0bX", engine.ToString(expr.node()));
+  EXPECT_EQ("0b0", engine.ToString(expr.node()));
 
   // When the interval sets are disjoint and less than, returns true.
   engine = RangeQueryEngine();
@@ -2061,6 +2087,32 @@ TEST_F(RangeQueryEngineTest, ULt) {
                                    Interval(UBits(700, 20), UBits(800, 20))}));
   XLS_ASSERT_OK(engine.Populate(f));
   EXPECT_EQ("0bX", engine.ToString(expr.node()));
+}
+
+TEST_F(RangeQueryEngineTest, SMul) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+
+  BValue x = fb.Param("x", p->GetBitsType(8));
+  BValue y = fb.Param("y", p->GetBitsType(8));
+  BValue expr = fb.SMul(x, y, 8);
+
+  XLS_ASSERT_OK_AND_ASSIGN(Function * f, fb.Build());
+  RangeQueryEngine engine;
+  engine.SetIntervalSetTree(
+      x.node(), BitsLTT(x.node(), {Interval(SBits(-2, 8), SBits(-1, 8)),
+                                   Interval(UBits(0, 8), UBits(2, 8))}));
+  engine.SetIntervalSetTree(
+      y.node(), BitsLTT(y.node(), {Interval(UBits(10, 8), UBits(20, 8))}));
+  XLS_ASSERT_OK(engine.Populate(f));
+
+  // Unsigned multiplication is monotone-monotone.
+  EXPECT_EQ(engine.GetIntervalSetTree(expr.node()),
+            BitsLTT(expr.node(), {
+                                     Interval(SBits(-40, 8), SBits(-10, 8)),
+                                     Interval(UBits(0, 8), UBits(0, 8)),
+                                     Interval(UBits(10, 8), UBits(40, 8)),
+                                 }));
 }
 
 TEST_F(RangeQueryEngineTest, UMul) {

@@ -105,8 +105,9 @@ class ChannelLegalizationPassTest
  protected:
   absl::StatusOr<bool> Run(Package* package) {
     PassResults results;
-    XLS_ASSIGN_OR_RETURN(bool changed,
-                         ChannelLegalizationPass().Run(package, {}, &results));
+    OptimizationContext context;
+    XLS_ASSIGN_OR_RETURN(bool changed, ChannelLegalizationPass().Run(
+                                           package, {}, &results, &context));
     XLS_RETURN_IF_ERROR(VerifyPackage(package));
     return changed;
   }
@@ -117,8 +118,8 @@ TestParam kTestParameters[] = {
         .test_name = "SingleProcBackToBackDataSwitchingOps",
         .ir_text = R"(package test
 
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="""""")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="""""")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc my_proc() {
   tok: token = literal(value=token)
@@ -194,8 +195,8 @@ top proc my_proc() {
     TestParam{
         .test_name = "TwoProcsMutuallyExclusive",
         .ir_text = R"(package test
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="""""")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="""""")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc proc_a(pred: bits[1], init={1}) {
   tok: token = literal(value=token)
@@ -260,8 +261,8 @@ proc proc_b(pred: bits[1], init={0}) {
     TestParam{
         .test_name = "TwoProcsAlwaysFiringCausesError",
         .ir_text = R"(package test
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="""""")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="""""")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc proc_a() {
   tok: token = literal(value=token)
@@ -335,9 +336,9 @@ proc proc_b() {
     TestParam{
         .test_name = "SingleProcWithPartialOrder",
         .ir_text = R"(package test
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="""""")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="""""")
-chan pred(bits[2], id=2, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="""""")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
+chan pred(bits[2], id=2, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
 
 top proc my_proc() {
   tok: token = literal(value=token)
@@ -493,9 +494,9 @@ top proc my_proc() {
     TestParam{
         .test_name = "RespectsTokenOrder",
         .ir_text = R"(package test
-chan pred_recv(bits[1], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, metadata="")
-chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="")
+chan pred_recv(bits[1], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid)
+chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc test_proc(state:(), init={()}) {
   tkn: token = literal(value=token)
@@ -576,8 +577,8 @@ top proc test_proc(state:(), init={()}) {
     TestParam{
         .test_name = "DataDependentReceiveSingleOutput",
         .ir_text = R"(package test
-chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="")
+chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc test_proc(state:(), init={()}) {
   tkn: token = literal(value=token)
@@ -668,9 +669,9 @@ top proc test_proc(state:(), init={()}) {
     TestParam{
         .test_name = "DataDependentReceiveMultipleOutputs",
         .ir_text = R"(package test
-chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan out0(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan out1(bits[32], id=3, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="")
+chan in(bits[32], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out0(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
+chan out1(bits[32], id=3, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc test_proc(state:(), init={()}) {
   tkn: token = literal(value=token)
@@ -776,9 +777,9 @@ top proc test_proc(state:(), init={()}) {
     TestParam{
         .test_name = "PredicateArrivesOutOfOrder",
         .ir_text = R"(package test
-chan pred0(bits[1], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan pred1(bits[1], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0, metadata="")
-chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0, metadata="")
+chan pred0(bits[1], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan pred1(bits[1], id=1, kind=streaming, ops=receive_only, flow_control=ready_valid, strictness=$0)
+chan out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, strictness=$0)
 
 top proc test_proc(state:(), init={()}) {
   tkn: token = literal(value=token)
@@ -1118,7 +1119,8 @@ class MutuallyExclusiveChannelLegalizationPassTest
             ChannelStrictnessToString(
                 ChannelStrictness::kProvenMutuallyExclusive))));
     PassResults results;
-    return ChannelLegalizationPass().Run(p.get(), {}, &results);
+    OptimizationContext context;
+    return ChannelLegalizationPass().Run(p.get(), {}, &results, &context);
   }
 };
 
@@ -1146,20 +1148,20 @@ class SingleValueChannelLegalizationPassTest : public TestWithParam<TestParam> {
         {
             // Global channel form.
             {"kind=streaming, ops=send_only, "
-             "flow_control=ready_valid, strictness=$0, ",
+             "flow_control=ready_valid, strictness=$0",
              "kind=single_value, ops=send_only, "},
             {"kind=streaming, ops=receive_only, "
-             "flow_control=ready_valid, strictness=$0, ",
+             "flow_control=ready_valid, strictness=$0",
              "kind=single_value, ops=receive_only, "},
             // Proc-scoped channel form.
             {"kind=streaming strictness=$0", "kind=single_value"},
             {"kind=streaming strictness=$0", "kind=single_value"},
         });
-
     XLS_ASSIGN_OR_RETURN(std::unique_ptr<Package> p,
                          Parser::ParsePackage(substituted_ir_text));
     PassResults results;
-    return ChannelLegalizationPass().Run(p.get(), {}, &results);
+    OptimizationContext context;
+    return ChannelLegalizationPass().Run(p.get(), {}, &results, &context);
   }
 };
 

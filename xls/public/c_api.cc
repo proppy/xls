@@ -58,22 +58,104 @@ void xls_init_xls(const char* usage, int argc, char* argv[]) {
   (void)(xls::InitXls(usage, argc, argv));
 }
 
-bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
-                            const char* module_name,
-                            const char* dslx_stdlib_path,
-                            const char* additional_search_paths[],
-                            size_t additional_search_paths_count,
-                            char** error_out, char** ir_out) {
+bool xls_convert_dslx_to_ir_with_warnings(
+    const char* dslx, const char* path, const char* module_name,
+    const char* dslx_stdlib_path, const char* additional_search_paths[],
+    size_t additional_search_paths_count, const char* enable_warnings[],
+    size_t enable_warnings_count, const char* disable_warnings[],
+    size_t disable_warnings_count, bool warnings_as_errors,
+    char*** warnings_out, size_t* warnings_out_count, char** error_out,
+    char** ir_out) {
   CHECK(dslx != nullptr);
   CHECK(path != nullptr);
   CHECK(dslx_stdlib_path != nullptr);
   CHECK(error_out != nullptr);
 
   std::vector<std::filesystem::path> additional_search_paths_cpp =
-      xls::ToCpp(additional_search_paths, additional_search_paths_count);
+      xls::ToCppPaths(additional_search_paths, additional_search_paths_count);
+  std::vector<std::string_view> enable_warnings_cpp =
+      xls::ToCppStringViews(enable_warnings, enable_warnings_count);
+  std::vector<std::string_view> disable_warnings_cpp =
+      xls::ToCppStringViews(disable_warnings, disable_warnings_count);
 
-  absl::StatusOr<std::string> result = xls::ConvertDslxToIr(
-      dslx, path, module_name, dslx_stdlib_path, additional_search_paths_cpp);
+  std::vector<std::string> warnings_out_cpp;
+
+  const xls::ConvertDslxToIrOptions options = {
+      .dslx_stdlib_path = dslx_stdlib_path,
+      .additional_search_paths = additional_search_paths_cpp,
+      .enable_warnings = enable_warnings_cpp,
+      .disable_warnings = disable_warnings_cpp,
+      .warnings_as_errors = warnings_as_errors,
+      .warnings_out = &warnings_out_cpp,
+  };
+
+  absl::StatusOr<std::string> result =
+      xls::ConvertDslxToIr(dslx, path, module_name, options);
+
+  if (warnings_out != nullptr) {
+    xls::ToOwnedCStrings(warnings_out_cpp, warnings_out, warnings_out_count);
+  } else if (warnings_out_count != nullptr) {
+    *warnings_out_count = warnings_out_cpp.size();
+  }
+
+  return xls::ReturnStringHelper(result, error_out, ir_out);
+}
+
+bool xls_convert_dslx_to_ir(const char* dslx, const char* path,
+                            const char* module_name,
+                            const char* dslx_stdlib_path,
+                            const char* additional_search_paths[],
+                            size_t additional_search_paths_count,
+                            char** error_out, char** ir_out) {
+  const char* enable_warnings[] = {};
+  const char* disable_warnings[] = {};
+  return xls_convert_dslx_to_ir_with_warnings(
+      dslx, path, module_name, dslx_stdlib_path, additional_search_paths,
+      additional_search_paths_count, enable_warnings, 0, disable_warnings, 0,
+      /*warnings_as_errors=*/false,
+      /*warnings_out=*/nullptr,
+      /*warnings_out_count=*/nullptr, error_out, ir_out);
+}
+
+bool xls_convert_dslx_path_to_ir_with_warnings(
+    const char* path, const char* dslx_stdlib_path,
+    const char* additional_search_paths[], size_t additional_search_paths_count,
+    const char* enable_warnings[], size_t enable_warnings_count,
+    const char* disable_warnings[], size_t disable_warnings_count,
+    bool warnings_as_errors, char*** warnings_out, size_t* warnings_out_count,
+    char** error_out, char** ir_out) {
+  CHECK(path != nullptr);
+  CHECK(dslx_stdlib_path != nullptr);
+  CHECK(error_out != nullptr);
+  if (warnings_out != nullptr) {
+    CHECK(warnings_out_count != nullptr);
+  }
+
+  std::vector<std::filesystem::path> additional_search_paths_cpp =
+      xls::ToCppPaths(additional_search_paths, additional_search_paths_count);
+  std::vector<std::string_view> enable_warnings_cpp =
+      xls::ToCppStringViews(enable_warnings, enable_warnings_count);
+  std::vector<std::string_view> disable_warnings_cpp =
+      xls::ToCppStringViews(disable_warnings, disable_warnings_count);
+
+  std::vector<std::string> warnings_out_cpp;
+
+  const xls::ConvertDslxToIrOptions options = {
+      .dslx_stdlib_path = dslx_stdlib_path,
+      .additional_search_paths = additional_search_paths_cpp,
+      .enable_warnings = enable_warnings_cpp,
+      .disable_warnings = disable_warnings_cpp,
+      .warnings_as_errors = warnings_as_errors,
+      .warnings_out = &warnings_out_cpp,
+  };
+  absl::StatusOr<std::string> result = xls::ConvertDslxPathToIr(path, options);
+
+  if (warnings_out != nullptr) {
+    xls::ToOwnedCStrings(warnings_out_cpp, warnings_out, warnings_out_count);
+  } else if (warnings_out_count != nullptr) {
+    *warnings_out_count = warnings_out_cpp.size();
+  }
+
   return xls::ReturnStringHelper(result, error_out, ir_out);
 }
 
@@ -81,16 +163,14 @@ bool xls_convert_dslx_path_to_ir(const char* path, const char* dslx_stdlib_path,
                                  const char* additional_search_paths[],
                                  size_t additional_search_paths_count,
                                  char** error_out, char** ir_out) {
-  CHECK(path != nullptr);
-  CHECK(dslx_stdlib_path != nullptr);
-  CHECK(error_out != nullptr);
-
-  std::vector<std::filesystem::path> additional_search_paths_cpp =
-      xls::ToCpp(additional_search_paths, additional_search_paths_count);
-
-  absl::StatusOr<std::string> result = xls::ConvertDslxPathToIr(
-      path, dslx_stdlib_path, additional_search_paths_cpp);
-  return xls::ReturnStringHelper(result, error_out, ir_out);
+  const char* enable_warnings[] = {};
+  const char* disable_warnings[] = {};
+  return xls_convert_dslx_path_to_ir_with_warnings(
+      path, dslx_stdlib_path, additional_search_paths,
+      additional_search_paths_count, enable_warnings, 0, disable_warnings, 0,
+      /*warnings_as_errors=*/false,
+      /*warnings_out=*/nullptr,
+      /*warnings_out_count=*/nullptr, error_out, ir_out);
 }
 
 bool xls_optimize_ir(const char* ir, const char* top, char** error_out,
@@ -204,6 +284,95 @@ bool xls_value_get_bits(const struct xls_value* value, char** error_out,
   *bits_out = nullptr;
   *error_out = xls::ToOwnedCString(bits.status().ToString());
   return false;
+}
+
+bool xls_value_get_element_count(const struct xls_value* value,
+                                 char** error_out, int64_t* count_out) {
+  CHECK(value != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(count_out != nullptr);
+  const auto* cpp_value = reinterpret_cast<const xls::Value*>(value);
+  switch (cpp_value->kind()) {
+    case xls::ValueKind::kTuple:
+    case xls::ValueKind::kArray:
+      *count_out = cpp_value->size();
+      return true;
+    default:
+      *error_out = xls::ToOwnedCString(
+          absl::InvalidArgumentError(
+              absl::StrFormat("Value is not a tuple or array, and so has no "
+                              "element count; kind: %s value: %s",
+                              xls::ValueKindToString(cpp_value->kind()),
+                              cpp_value->ToString()))
+              .ToString());
+      return false;
+  }
+}
+
+bool xls_value_get_element(const struct xls_value* value, size_t index,
+                           char** error_out, struct xls_value** element_out) {
+  CHECK(value != nullptr);
+  CHECK(error_out != nullptr);
+  CHECK(element_out != nullptr);
+  const auto* cpp_value = reinterpret_cast<const xls::Value*>(value);
+  switch (cpp_value->kind()) {
+    case xls::ValueKind::kTuple:
+    case xls::ValueKind::kArray:
+      *element_out = reinterpret_cast<xls_value*>(
+          new xls::Value(cpp_value->element(index)));
+      break;
+    case xls::ValueKind::kBits:
+    case xls::ValueKind::kToken:
+      *error_out = xls::ToOwnedCString(
+          absl::InvalidArgumentError(
+              absl::StrFormat(
+                  "Value does not hold elements; kind: %s value: %s",
+                  xls::ValueKindToString(cpp_value->kind()),
+                  cpp_value->ToString()))
+              .ToString());
+      return false;
+    case xls::ValueKind::kInvalid:
+      *error_out = xls::ToOwnedCString(
+          absl::InvalidArgumentError("Value is invalid").ToString());
+      return false;
+  }
+  return true;
+}
+
+struct xls_value* xls_value_clone(const struct xls_value* value) {
+  CHECK(value != nullptr);
+  const auto* cpp_value = reinterpret_cast<const xls::Value*>(value);
+  return reinterpret_cast<xls_value*>(new xls::Value(*cpp_value));
+}
+
+bool xls_value_make_ubits(int64_t bit_count, uint64_t value, char** error_out,
+                          struct xls_value** xls_value_out) {
+  CHECK(error_out != nullptr);
+  CHECK(xls_value_out != nullptr);
+  absl::StatusOr<xls::Bits> bits = xls::UBitsWithStatus(value, bit_count);
+  if (!bits.ok()) {
+    *error_out = xls::ToOwnedCString(bits.status().ToString());
+    return false;
+  }
+  *xls_value_out =
+      reinterpret_cast<xls_value*>(new xls::Value(std::move(bits).value()));
+  *error_out = nullptr;
+  return true;
+}
+
+bool xls_value_make_sbits(int64_t bit_count, int64_t value, char** error_out,
+                          struct xls_value** xls_value_out) {
+  CHECK(error_out != nullptr);
+  CHECK(xls_value_out != nullptr);
+  absl::StatusOr<xls::Bits> bits = xls::SBitsWithStatus(value, bit_count);
+  if (!bits.ok()) {
+    *error_out = xls::ToOwnedCString(bits.status().ToString());
+    return false;
+  }
+  *xls_value_out =
+      reinterpret_cast<xls_value*>(new xls::Value(std::move(bits).value()));
+  *error_out = nullptr;
+  return true;
 }
 
 struct xls_value* xls_value_make_token() {
@@ -461,8 +630,22 @@ void xls_package_free(struct xls_package* p) {
   delete reinterpret_cast<xls::Package*>(p);
 }
 
-void xls_c_str_free(char* c_str) {
-  free(c_str);
+void xls_c_str_free(char* c_str) { free(c_str); }
+
+void xls_c_strs_free(char** c_strs, size_t count) {
+  CHECK_EQ(count == 0, c_strs == nullptr) << absl::StreamFormat(
+      "xls_c_strs_free expected consistency between zero-size and "
+      "array being nullptr; count = %d, c_strs = %p",
+      count, c_strs);
+
+  if (c_strs == nullptr) {
+    return;
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    free(c_strs[i]);
+  }
+  delete[] c_strs;
 }
 
 bool xls_value_to_string(const struct xls_value* v, char** string_out) {

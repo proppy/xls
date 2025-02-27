@@ -43,9 +43,10 @@ class TokenDependencyPassTest : public IrTestBase {
 
   absl::StatusOr<bool> Run(FunctionBase* f) {
     PassResults results;
+    OptimizationContext context;
     XLS_ASSIGN_OR_RETURN(bool changed,
                          TokenDependencyPass().RunOnFunctionBase(
-                             f, OptimizationPassOptions(), &results));
+                             f, OptimizationPassOptions(), &results, &context));
     return changed;
   }
 };
@@ -56,7 +57,7 @@ TEST_F(TokenDependencyPassTest, Simple) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: (), init={()}) {
        __token: token = literal(value=token, id=1000)
@@ -85,7 +86,7 @@ TEST_F(TokenDependencyPassTest, MultipleSends) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: (), init={()}) {
        __token: token = literal(value=token, id=1000)
@@ -122,7 +123,7 @@ TEST_F(TokenDependencyPassTest, DependentSends) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: (), init={()}) {
        __token: token = literal(value=token, id=1000)
@@ -157,7 +158,7 @@ TEST_F(TokenDependencyPassTest, DependentSendsMultipleReceives) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_receive,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(__state: (), init={()}) {
        __token: token = literal(value=token, id=1000)
@@ -195,7 +196,7 @@ TEST_F(TokenDependencyPassTest, SideEffectingNontokenOps) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=receive_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(init={}) {
        __token: token = literal(value=token, id=1000)
@@ -208,6 +209,32 @@ TEST_F(TokenDependencyPassTest, SideEffectingNontokenOps) {
   )"));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   // Should not crash.
+  EXPECT_THAT(Run(proc), IsOkAndHolds(false));
+}
+
+TEST_F(TokenDependencyPassTest, SupportsCrossActivationTokens) {
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> p, ParsePackage(R"(
+     package test_module
+
+     chan test_channel(
+       bits[32], id=0, kind=streaming, ops=send_only,
+       flow_control=ready_valid)
+
+     top proc main(__state: (bits[32], token, bits[32]), init={(1, token, 1)}) {
+       a: bits[32] = tuple_index(__state, index=0)
+       b: bits[32] = tuple_index(__state, index=2)
+       tok: token = tuple_index(__state, index=1)
+       c: bits[32] = add(a, b)
+       new_tok: token = literal(value=token)
+       snd: token = send(new_tok, c, channel=test_channel)
+       next_tok: token = after_all(tok, snd)
+       next_state: (bits[32], token, bits[32]) = tuple(b, next_tok, c)
+       next (next_state)
+     }
+  )"));
+  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
+  // No changes required; in particular, we don't need the send to depend on the
+  // cross-activation token as written.
   EXPECT_THAT(Run(proc), IsOkAndHolds(false));
 }
 

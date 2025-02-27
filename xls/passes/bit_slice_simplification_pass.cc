@@ -44,9 +44,9 @@
 #include "xls/ir/op.h"
 #include "xls/ir/source_location.h"
 #include "xls/ir/ternary.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
+#include "xls/passes/lazy_ternary_query_engine.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
 #include "xls/passes/pass_base.h"
@@ -60,14 +60,17 @@ namespace xls {
 namespace {
 
 static absl::StatusOr<std::unique_ptr<QueryEngine>> GetQueryEngine(
-    FunctionBase* f, int64_t opt_level) {
-  std::vector<std::unique_ptr<QueryEngine>> engines;
-  engines.push_back(std::make_unique<StatelessQueryEngine>());
-  engines.push_back(std::make_unique<TernaryQueryEngine>());
+    FunctionBase* f, int64_t opt_level, OptimizationContext* context) {
+  std::vector<std::unique_ptr<QueryEngine>> owned_engines;
+  std::vector<QueryEngine*> unowned_engines;
+  owned_engines.push_back(std::make_unique<StatelessQueryEngine>());
+  unowned_engines.push_back(
+      context->SharedQueryEngine<LazyTernaryQueryEngine>(f));
   if (opt_level >= 3) {
-    engines.push_back(std::make_unique<RangeQueryEngine>());
+    owned_engines.push_back(std::make_unique<RangeQueryEngine>());
   }
-  auto query_engine = std::make_unique<UnionQueryEngine>(std::move(engines));
+  auto query_engine = std::make_unique<UnionQueryEngine>(
+      std::move(owned_engines), std::move(unowned_engines));
 
   XLS_RETURN_IF_ERROR(query_engine->Populate(f).status());
   return std::move(query_engine);
@@ -1061,18 +1064,18 @@ absl::StatusOr<bool> SimplifyBitSliceUpdate(BitSliceUpdate* update,
 
 absl::StatusOr<bool> BitSliceSimplificationPass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   bool changed = false;
 
   XLS_ASSIGN_OR_RETURN(std::unique_ptr<QueryEngine> query_engine,
-                       GetQueryEngine(f, options.opt_level));
+                       GetQueryEngine(f, options.opt_level, context));
 
   // Iterating through these operations in reverse topological order makes sure
   // we don't need to re-populate the query engine between nodes.
   //
   // Also, since these simplifications never generate more nodes of the same
   // type, we don't need to worry about running them to fixed-point.
-  for (Node* node : ReverseTopoSort(f)) {
+  for (Node* node : context->ReverseTopoSort(f)) {
     bool node_changed = false;
     if (node->Is<DynamicBitSlice>()) {
       XLS_ASSIGN_OR_RETURN(node_changed,

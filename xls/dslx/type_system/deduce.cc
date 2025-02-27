@@ -1391,6 +1391,9 @@ static absl::Status ValidateMatchable(const Type& type, const Span& span,
     absl::Status HandleProc(const ProcType& type) override {
       return Error(type);
     }
+    absl::Status HandleModule(const ModuleType& type) override {
+      return Error(type);
+    }
 
    private:
     absl::Status Error(const Type& type) {
@@ -2203,6 +2206,11 @@ class DeduceVisitor : public AstNodeVisitor {
     }
     result_ = std::move(callee_type);
     return absl::OkStatus();
+  }
+
+  absl::Status HandleGenericTypeAnnotation(
+      const GenericTypeAnnotation* n) override {
+    return Fatal(n);
   }
 
   absl::StatusOr<std::unique_ptr<Type>>& result() { return result_; }

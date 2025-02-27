@@ -329,12 +329,14 @@ class FunctionConverterVisitor : public AstNodeVisitor {
     return converter_->Handle##__type(node);                 \
   }
 
-  TRAVERSE_DISPATCH(Unop)
+  // keep-sorted start
+  TRAVERSE_DISPATCH(AllOnesMacro)
   TRAVERSE_DISPATCH(Binop)
+  TRAVERSE_DISPATCH(Unop)
+  TRAVERSE_DISPATCH(UnrollFor)
   TRAVERSE_DISPATCH(XlsTuple)
   TRAVERSE_DISPATCH(ZeroMacro)
-  TRAVERSE_DISPATCH(AllOnesMacro)
-  TRAVERSE_DISPATCH(UnrollFor)
+  // keep-sorted end
 
   // A macro used for AST types where we don't want to visit any children, just
   // call the FunctionConverter handler.
@@ -343,10 +345,12 @@ class FunctionConverterVisitor : public AstNodeVisitor {
     return converter_->Handle##__type(node);                 \
   }
 
-  NO_TRAVERSE_DISPATCH(Param)
+  // keep-sorted start
   NO_TRAVERSE_DISPATCH(NameRef)
   NO_TRAVERSE_DISPATCH(Number)
+  NO_TRAVERSE_DISPATCH(Param)
   NO_TRAVERSE_DISPATCH(String)
+  // keep-sorted end
 
   // A macro used for AST types where we don't want to visit any children, just
   // call the FunctionConverter handler.
@@ -355,11 +359,12 @@ class FunctionConverterVisitor : public AstNodeVisitor {
     return converter_->Handle##__type(node);                 \
   }
 
-  NO_TRAVERSE_DISPATCH_VISIT(Attr)
+  // keep-sorted start
   NO_TRAVERSE_DISPATCH_VISIT(Array)
-  NO_TRAVERSE_DISPATCH_VISIT(StatementBlock)
+  NO_TRAVERSE_DISPATCH_VISIT(Attr)
   NO_TRAVERSE_DISPATCH_VISIT(Cast)
   NO_TRAVERSE_DISPATCH_VISIT(ColonRef)
+  NO_TRAVERSE_DISPATCH_VISIT(Conditional)
   NO_TRAVERSE_DISPATCH_VISIT(ConstantDef)
   NO_TRAVERSE_DISPATCH_VISIT(For)
   NO_TRAVERSE_DISPATCH_VISIT(FormatMacro)
@@ -370,9 +375,10 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   NO_TRAVERSE_DISPATCH_VISIT(Range)
   NO_TRAVERSE_DISPATCH_VISIT(SplatStructInstance)
   NO_TRAVERSE_DISPATCH_VISIT(Statement)
+  NO_TRAVERSE_DISPATCH_VISIT(StatementBlock)
   NO_TRAVERSE_DISPATCH_VISIT(StructInstance)
-  NO_TRAVERSE_DISPATCH_VISIT(Conditional)
   NO_TRAVERSE_DISPATCH_VISIT(TupleIndex)
+  // keep-sorted end
 
   // A macro used for AST types that we never expect to visit (if we do we
   // provide an error message noting it was unexpected).
@@ -384,7 +390,7 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   // These are always custom-visited (i.e. traversed to in a specialized way
   // from their parent nodes).
   // keep-sorted start
-  INVALID(FunctionRef);
+  INVALID(FunctionRef)
   INVALID(MatchArm)
   INVALID(NameDef)
   INVALID(NameDefTree)
@@ -399,19 +405,20 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(WildcardPattern)
   // keep-sorted end
   // keep-sorted start
+  INVALID(AnyTypeAnnotation)
   INVALID(ArrayTypeAnnotation)
   INVALID(BuiltinTypeAnnotation)
   INVALID(ChannelTypeAnnotation)
+  INVALID(ElementTypeAnnotation)
+  INVALID(FunctionTypeAnnotation)
+  INVALID(GenericTypeAnnotation)
+  INVALID(MemberTypeAnnotation)
+  INVALID(ParamTypeAnnotation)
+  INVALID(ReturnTypeAnnotation)
   INVALID(SelfTypeAnnotation)
   INVALID(TupleTypeAnnotation)
   INVALID(TypeRefTypeAnnotation)
   INVALID(TypeVariableTypeAnnotation)
-  INVALID(MemberTypeAnnotation)
-  INVALID(ElementTypeAnnotation)
-  INVALID(FunctionTypeAnnotation)
-  INVALID(ReturnTypeAnnotation)
-  INVALID(ParamTypeAnnotation)
-  INVALID(AnyTypeAnnotation)
   // keep-sorted end
 
   // The visitor operates within a function, so none of these should be visible.
@@ -425,12 +432,12 @@ class FunctionConverterVisitor : public AstNodeVisitor {
   INVALID(Lambda)
   INVALID(Module)
   INVALID(Proc)
+  INVALID(ProcDef)
   INVALID(ProcMember)
   INVALID(QuickCheck)
   INVALID(Spawn)
   INVALID(StructDef)
   INVALID(StructMemberNode)
-  INVALID(ProcDef)
   INVALID(TypeAlias)
   INVALID(Use)
   INVALID(UseTreeEntry)
@@ -1090,6 +1097,23 @@ absl::Status FunctionConverter::HandleBuiltinCheckedCast(
   return absl::OkStatus();
 }
 
+absl::Status FunctionConverter::HandleBuiltinBitCount(const Invocation* node) {
+  // Like array_size, bit_count is always constexpr.
+  XLS_ASSIGN_OR_RETURN(InterpValue iv, current_type_info_->GetConstExpr(node));
+  XLS_ASSIGN_OR_RETURN(Value v, InterpValueToValue(iv));
+  DefConst(node, v);
+  return absl::OkStatus();
+}
+
+absl::Status FunctionConverter::HandleBuiltinElementCount(
+    const Invocation* node) {
+  // Like bit_count, element_count is always constexpr.
+  XLS_ASSIGN_OR_RETURN(InterpValue iv, current_type_info_->GetConstExpr(node));
+  XLS_ASSIGN_OR_RETURN(Value v, InterpValueToValue(iv));
+  DefConst(node, v);
+  return absl::OkStatus();
+}
+
 absl::Status FunctionConverter::HandleBuiltinWideningCast(
     const Invocation* node) {
   XLS_RET_CHECK_EQ(node->args().size(), 1);
@@ -1189,8 +1213,8 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
     arm_values.push_back(arm_rhs_value);
   }
 
-  // For compute of the default arm the control predicate is "none of the other
-  // arms matched".
+  // For compute of the default (last) arm the control predicate is "none of the
+  // other arms matched".
   ScopedControlPredicate scp(
       this, [&](const PredicateFun& orig_control_predicate) {
         // The default arm is "activated" when:
@@ -1209,14 +1233,11 @@ absl::Status FunctionConverter::HandleMatch(const Match* node) {
         return function_builder_->And(
             {orig_control_predicate(), not_any_prev_selected});
       });
+
+  // We are guaranteed from exhaustiveness checking that the last arm handles
+  // all of the rest of the values aside from the ones covered by the earlier
+  // match arms, and so can be emitted as the "default" in the selection IR.
   MatchArm* default_arm = node->arms().back();
-  if (default_arm->patterns().size() != 1) {
-    return IrConversionErrorStatus(
-        node->span(),
-        "Multiple patterns in default arm "
-        "is not currently supported for IR conversion.",
-        file_table());
-  }
   XLS_RETURN_IF_ERROR(
       HandleMatcher(default_arm->patterns()[0], matched, *matched_type)
           .status());
@@ -1858,9 +1879,10 @@ absl::StatusOr<BValue> FunctionConverter::HandleMap(const Invocation* node) {
     lookup_module = module_;
   } else if (auto* colon_ref = dynamic_cast<ColonRef*>(fn_node)) {
     map_fn_name = colon_ref->attr();
-    Import* import_node = colon_ref->ResolveImportSubject().value();
+    std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
+    XLS_RET_CHECK(import.has_value());
     std::optional<const ImportedInfo*> info =
-        current_type_info_->GetImported(import_node);
+        current_type_info_->GetImported(import.value());
     lookup_module = (*info)->module;
   } else {
     return absl::UnimplementedError("Unhandled function mapping: " +
@@ -2345,29 +2367,33 @@ absl::Status FunctionConverter::HandleInvocation(const Invocation* node) {
   absl::flat_hash_map<std::string,
                       decltype(&FunctionConverter::HandleBuiltinClz)>
       map = {
+          // keep-sorted start
+          {"and_reduce", &FunctionConverter::HandleBuiltinAndReduce},
           {"array_rev", &FunctionConverter::HandleBuiltinArrayRev},
           {"array_size", &FunctionConverter::HandleBuiltinArraySize},
+          {"array_slice", &FunctionConverter::HandleBuiltinArraySlice},
+          {"bit_count", &FunctionConverter::HandleBuiltinBitCount},
+          {"bit_slice_update", &FunctionConverter::HandleBuiltinBitSliceUpdate},
+          {"checked_cast", &FunctionConverter::HandleBuiltinCheckedCast},
           {"clz", &FunctionConverter::HandleBuiltinClz},
           {"ctz", &FunctionConverter::HandleBuiltinCtz},
-          {"gate!", &FunctionConverter::HandleBuiltinGate},
-          {"signex", &FunctionConverter::HandleBuiltinSignex},
           {"decode", &FunctionConverter::HandleBuiltinDecode},
+          {"element_count", &FunctionConverter::HandleBuiltinElementCount},
           {"encode", &FunctionConverter::HandleBuiltinEncode},
+          {"gate!", &FunctionConverter::HandleBuiltinGate},
           {"one_hot", &FunctionConverter::HandleBuiltinOneHot},
           {"one_hot_sel", &FunctionConverter::HandleBuiltinOneHotSel},
-          {"priority_sel", &FunctionConverter::HandleBuiltinPrioritySel},
-          {"array_slice", &FunctionConverter::HandleBuiltinArraySlice},
-          {"bit_slice_update", &FunctionConverter::HandleBuiltinBitSliceUpdate},
-          {"rev", &FunctionConverter::HandleBuiltinRev},
-          {"zip", &FunctionConverter::HandleBuiltinZip},
-          {"and_reduce", &FunctionConverter::HandleBuiltinAndReduce},
           {"or_reduce", &FunctionConverter::HandleBuiltinOrReduce},
-          {"xor_reduce", &FunctionConverter::HandleBuiltinXorReduce},
-          {"widening_cast", &FunctionConverter::HandleBuiltinWideningCast},
-          {"checked_cast", &FunctionConverter::HandleBuiltinCheckedCast},
-          {"update", &FunctionConverter::HandleBuiltinUpdate},
-          {"umulp", &FunctionConverter::HandleBuiltinUMulp},
+          {"priority_sel", &FunctionConverter::HandleBuiltinPrioritySel},
+          {"rev", &FunctionConverter::HandleBuiltinRev},
+          {"signex", &FunctionConverter::HandleBuiltinSignex},
           {"smulp", &FunctionConverter::HandleBuiltinSMulp},
+          {"umulp", &FunctionConverter::HandleBuiltinUMulp},
+          {"update", &FunctionConverter::HandleBuiltinUpdate},
+          {"widening_cast", &FunctionConverter::HandleBuiltinWideningCast},
+          {"xor_reduce", &FunctionConverter::HandleBuiltinXorReduce},
+          {"zip", &FunctionConverter::HandleBuiltinZip},
+          // keep-sorted end
       };
   auto it = map.find(called_name);
   if (it == map.end()) {
@@ -3000,11 +3026,12 @@ absl::Status FunctionConverter::HandleColonRef(const ColonRef* node) {
   // Implementation note: ColonRef "invocations" are handled in Invocation (by
   // resolving the mangled callee name, which should have been IR converted in
   // dependency order).
-  if (std::optional<Import*> import = node->ResolveImportSubject()) {
+  if (std::optional<ImportSubject> import = node->ResolveImportSubject()) {
     VLOG(6) << "ColonRef @ " << node->span().ToString(file_table())
-            << " was import subject; import: " << import.value()->ToString();
+            << " was import subject; import: "
+            << ToAstNode(import.value())->ToString();
     std::optional<const ImportedInfo*> imported =
-        current_type_info_->GetImported(*import);
+        current_type_info_->GetImported(import.value());
     XLS_RET_CHECK(imported.has_value());
     Module* imported_mod = (*imported)->module;
     XLS_ASSIGN_OR_RETURN(ConstantDef * constant_def,
@@ -3165,10 +3192,10 @@ absl::StatusOr<std::string> FunctionConverter::GetCalleeIdentifier(
     }
   } else if (auto* colon_ref = dynamic_cast<ColonRef*>(callee)) {
     callee_name = colon_ref->attr();
-    std::optional<Import*> import = colon_ref->ResolveImportSubject();
+    std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
     XLS_RET_CHECK(import.has_value());
     std::optional<const ImportedInfo*> info =
-        current_type_info_->GetImported(*import);
+        current_type_info_->GetImported(import.value());
     m = (*info)->module;
   } else {
     return absl::InternalError("Invalid callee: " + callee->ToString());
@@ -3887,10 +3914,10 @@ FunctionConverter::DerefStructOrEnum(TypeDefinition node) {
 
   XLS_RET_CHECK(std::holds_alternative<ColonRef*>(node));
   auto* colon_ref = std::get<ColonRef*>(node);
-  std::optional<Import*> import = colon_ref->ResolveImportSubject();
+  std::optional<ImportSubject> import = colon_ref->ResolveImportSubject();
   XLS_RET_CHECK(import.has_value());
   std::optional<const ImportedInfo*> info =
-      current_type_info_->GetImported(*import);
+      current_type_info_->GetImported(import.value());
   Module* imported_mod = (*info)->module;
   ScopedTypeInfoSwap stis(this, (*info)->type_info);
   XLS_ASSIGN_OR_RETURN(TypeDefinition td,
@@ -3993,7 +4020,9 @@ absl::StatusOr<std::optional<ConstantDef*>> TryResolveConstantDef(
                        type_info.GetImportedOrError(use_tree_entry));
   std::optional<ModuleMember*> member =
       info->module->FindMemberWithName(identifier);
-  XLS_RET_CHECK(member.has_value());
+  XLS_RET_CHECK(member.has_value())
+      << "Failed to find constant named: `" << identifier << "` in module: `"
+      << info->module->name() << "`";
   if (std::holds_alternative<ConstantDef*>(*member.value())) {
     auto* result = std::get<ConstantDef*>(*member.value());
     return result;
@@ -4013,6 +4042,13 @@ absl::StatusOr<std::vector<ConstantDef*>> GetConstantDepFreevars(
       continue;
     }
     const auto* name_def = std::get<const NameDef*>(any_name_def);
+
+    // If this is a direct module reference we skip it.
+    if (std::optional<Type*> type = type_info.GetItem(name_def);
+        type.has_value() && type.value()->IsModule()) {
+      continue;
+    }
+
     AstNode* definer = name_def->definer();
     if (auto* use_tree_entry = dynamic_cast<UseTreeEntry*>(definer);
         use_tree_entry != nullptr) {

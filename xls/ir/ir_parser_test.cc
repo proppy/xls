@@ -37,6 +37,7 @@
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
 #include "xls/ir/package.h"
+#include "xls/ir/register.h"
 #include "xls/ir/state_element.h"
 #include "xls/ir/type.h"
 #include "xls/ir/value.h"
@@ -50,7 +51,6 @@ using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 using ::testing::Not;
 using ::testing::Optional;
-using ::testing::Property;
 
 // EXPECTS that the two given strings are similar modulo extra whitespace.
 static void ExpectStringsSimilar(
@@ -631,8 +631,7 @@ TEST(IrParserTest, ParseSendReceiveChannel) {
   XLS_ASSERT_OK_AND_ASSIGN(Channel * ch,
                            Parser::ParseChannel(
                                R"(chan foo(bits[32], id=42, kind=single_value,
-                      ops=send_receive,
-                      metadata=""))",
+                      ops=send_receive))",
                                &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_EQ(ch->id(), 42);
@@ -650,8 +649,7 @@ TEST(IrParserTest, ParseSendReceiveChannelWithInitialValues) {
       Channel * ch,
       Parser::ParseChannel(
           R"(chan foo(bits[32], initial_values={2, 4, 5}, id=42, kind=streaming,
-                         flow_control=none, ops=send_receive,
-                         metadata=""))",
+                         flow_control=none, ops=send_receive))",
           &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_EQ(ch->id(), 42);
@@ -669,8 +667,7 @@ TEST(IrParserTest, ParseSendReceiveChannelWithTupleType) {
                                              R"(chan foo((bits[32], bits[1]),
                       initial_values={(123, 1), (42, 0)},
                       id=42, kind=streaming, flow_control=ready_valid,
-                      ops=send_receive,
-                      metadata=""))",
+                      ops=send_receive))",
                                              &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_THAT(
@@ -683,8 +680,7 @@ TEST(IrParserTest, ParseSendOnlyChannel) {
   Package p("my_package");
   XLS_ASSERT_OK_AND_ASSIGN(Channel * ch, Parser::ParseChannel(
                                              R"(chan bar((bits[32], bits[1]),
-                         id=7, kind=single_value, ops=send_only,
-                         metadata=""))",
+                         id=7, kind=single_value, ops=send_only))",
                                              &p));
   EXPECT_EQ(ch->name(), "bar");
   EXPECT_EQ(ch->id(), 7);
@@ -696,8 +692,7 @@ TEST(IrParserTest, ParseReceiveOnlyChannel) {
   Package p("my_package");
   XLS_ASSERT_OK_AND_ASSIGN(Channel * ch, Parser::ParseChannel(
                                              R"(chan meh(bits[32][4], id=0,
-                         kind=single_value, ops=receive_only,
-                         metadata=""))",
+                         kind=single_value, ops=receive_only))",
                                              &p));
   EXPECT_EQ(ch->name(), "meh");
   EXPECT_EQ(ch->id(), 0);
@@ -711,7 +706,7 @@ TEST(IrParserTest, ParseStreamingChannelWithStrictness) {
                            Parser::ParseChannel(
                                R"(chan foo(bits[32], id=42, kind=streaming,
                          flow_control=none, ops=send_receive,
-                         strictness=arbitrary_static_order, metadata=""""""))",
+                         strictness=arbitrary_static_order))",
                                &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_EQ(ch->id(), 42);
@@ -728,7 +723,7 @@ TEST(IrParserTest, ParseStreamingChannelWithExtraFifoMetadataNoFlops) {
                            Parser::ParseChannel(
                                R"(chan foo(bits[32], id=42, kind=streaming,
                          flow_control=none, ops=send_receive, fifo_depth=3,
-                         bypass=false, metadata=""""""))",
+                         bypass=false))",
                                &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_EQ(ch->id(), 42);
@@ -754,7 +749,7 @@ TEST(IrParserTest, ParseStreamingChannelWithExtraFifoMetadata) {
                                R"(chan foo(bits[32], id=42, kind=streaming,
                          flow_control=none, ops=send_receive, fifo_depth=3,
                          input_flop_kind=skid, output_flop_kind=zero_latency,
-                         bypass=false, metadata=""""""))",
+                         bypass=false))",
                                &p));
   EXPECT_EQ(ch->name(), "foo");
   EXPECT_EQ(ch->id(), 42);
@@ -779,109 +774,13 @@ TEST(IrParserTest, ParseStreamingChannelWithExtraFifoMetadata) {
       FlopKind::kZeroLatency);
 }
 
-TEST(IrParserTest, ParseStreamingValueChannelWithBlockPortMapping) {
-  // For testing round-trip parsing.
-  std::string ch_ir_text;
-
-  {
-    Package p("my_package");
-    XLS_ASSERT_OK_AND_ASSIGN(Channel * ch, Parser::ParseChannel(
-                                               R"(chan meh(bits[32][4], id=0,
-                         kind=streaming, flow_control=ready_valid,
-                         ops=send_only,
-                         metadata="""block_ports { data_port_name : "data",
-                                                   block_name : "blk",
-                                                   ready_port_name : "rdy",
-                                                   valid_port_name: "vld"
-                                                 }"""))",
-                                               &p));
-    EXPECT_EQ(ch->name(), "meh");
-    EXPECT_EQ(ch->id(), 0);
-    EXPECT_EQ(ch->supported_ops(), ChannelOps::kSendOnly);
-
-    EXPECT_THAT(ch->metadata().block_ports(),
-                ElementsAre(AllOf(
-                    Property(&BlockPortMappingProto::block_name, "blk"),
-                    Property(&BlockPortMappingProto::data_port_name, "data"),
-                    Property(&BlockPortMappingProto::valid_port_name, "vld"),
-                    Property(&BlockPortMappingProto::ready_port_name, "rdy"))));
-
-    ch_ir_text = ch->ToString();
-  }
-
-  {
-    Package p("my_package_2");
-    XLS_ASSERT_OK_AND_ASSIGN(Channel * ch,
-                             Parser::ParseChannel(ch_ir_text, &p));
-    EXPECT_EQ(ch->name(), "meh");
-
-    EXPECT_EQ(ch->id(), 0);
-
-    EXPECT_EQ(ch->supported_ops(), ChannelOps::kSendOnly);
-
-    EXPECT_THAT(ch->metadata().block_ports(),
-                ElementsAre(AllOf(
-                    Property(&BlockPortMappingProto::block_name, "blk"),
-                    Property(&BlockPortMappingProto::data_port_name, "data"),
-                    Property(&BlockPortMappingProto::valid_port_name, "vld"),
-                    Property(&BlockPortMappingProto::ready_port_name, "rdy"))));
-  }
-}
-
-TEST(IrParserTest, ParseSingleValueChannelWithBlockPortMapping) {
-  // For testing round-trip parsing.
-  std::string ch_ir_text;
-
-  {
-    Package p("my_package");
-    XLS_ASSERT_OK_AND_ASSIGN(Channel * ch, Parser::ParseChannel(
-                                               R"(chan meh(bits[32][4], id=0,
-                         kind=single_value, ops=receive_only,
-                         metadata="""block_ports { data_port_name : "data",
-                                                   block_name : "blk"}"""))",
-                                               &p));
-    EXPECT_EQ(ch->name(), "meh");
-    EXPECT_EQ(ch->id(), 0);
-    EXPECT_EQ(ch->supported_ops(), ChannelOps::kReceiveOnly);
-
-    EXPECT_THAT(
-        ch->metadata().block_ports(),
-        ElementsAre(AllOf(
-            Property(&BlockPortMappingProto::block_name, "blk"),
-            Property(&BlockPortMappingProto::data_port_name, "data"),
-            Property(&BlockPortMappingProto::has_valid_port_name, false),
-            Property(&BlockPortMappingProto::has_ready_port_name, false))));
-
-    ch_ir_text = ch->ToString();
-  }
-
-  {
-    Package p("my_package_2");
-    XLS_ASSERT_OK_AND_ASSIGN(Channel * ch,
-                             Parser::ParseChannel(ch_ir_text, &p));
-    EXPECT_EQ(ch->name(), "meh");
-
-    EXPECT_EQ(ch->id(), 0);
-    EXPECT_EQ(ch->supported_ops(), ChannelOps::kReceiveOnly);
-
-    EXPECT_THAT(
-        ch->metadata().block_ports(),
-        ElementsAre(AllOf(
-            Property(&BlockPortMappingProto::block_name, "blk"),
-            Property(&BlockPortMappingProto::data_port_name, "data"),
-            Property(&BlockPortMappingProto::has_valid_port_name, false),
-            Property(&BlockPortMappingProto::has_ready_port_name, false))));
-  }
-}
-
 TEST(IrParserTest, PackageWithSingleDataElementChannels) {
   std::string program = R"(
 package test
 
 chan hbo(bits[32], id=0, kind=streaming, flow_control=none, ops=receive_only,
-            fifo_depth=42, metadata="")
-chan mtv(bits[32], id=1, kind=streaming, flow_control=none, ops=send_only,
-            metadata="")
+            fifo_depth=42)
+chan mtv(bits[32], id=1, kind=streaming, flow_control=none, ops=send_only)
 
 proc my_proc(my_token: token, my_state: bits[32], init={token, 42}) {
   receive.1: (token, bits[32]) = receive(my_token, channel=hbo)
@@ -1106,8 +1005,8 @@ TEST(IrParserTest, ParseChannelPortMetadata) {
 
 block my_block(in: bits[32], in_valid: bits[1], in_ready: bits[1],
                out: bits[32]) {
-  #![channel_ports(name=foo, type=bits[32], direction=in, kind=streaming, flop=skid, data_port=in, ready_port=in_ready, valid_port=in_valid)]
-  #![channel_ports(name=bar, type=bits[32], direction=out, kind=single_value, data_port=out)]
+  #![channel_ports(name=foo, type=bits[32], direction=receive, kind=streaming, flop=skid, data_port=in, ready_port=in_ready, valid_port=in_valid)]
+  #![channel_ports(name=bar, type=bits[32], direction=send, kind=single_value, data_port=out)]
   in: bits[32] = input_port(name=in)
   in_valid: bits[1] = input_port(name=in_valid)
   data: bits[32] = literal(value=42)
@@ -1120,27 +1019,45 @@ block my_block(in: bits[32], in_valid: bits[1], in_ready: bits[1],
                            Parser::ParsePackage(input));
   XLS_ASSERT_OK_AND_ASSIGN(Block * b, pkg->GetBlock("my_block"));
 
-  XLS_ASSERT_OK_AND_ASSIGN(ChannelPortMetadata foo_metadata,
-                           b->GetChannelPortMetadata("foo"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ChannelPortMetadata foo_metadata,
+      b->GetChannelPortMetadata("foo", ChannelDirection::kReceive));
   EXPECT_EQ(foo_metadata.channel_name, "foo");
   EXPECT_EQ(foo_metadata.type, pkg->GetBitsType(32));
-  EXPECT_EQ(foo_metadata.direction, PortDirection::kInput);
+  EXPECT_EQ(foo_metadata.direction, ChannelDirection::kReceive);
   EXPECT_EQ(foo_metadata.channel_kind, ChannelKind::kStreaming);
   EXPECT_EQ(foo_metadata.flop_kind, FlopKind::kSkid);
   EXPECT_THAT(foo_metadata.data_port, Optional(Eq("in")));
   EXPECT_THAT(foo_metadata.ready_port, Optional(Eq("in_ready")));
   EXPECT_THAT(foo_metadata.valid_port, Optional(Eq("in_valid")));
 
-  XLS_ASSERT_OK_AND_ASSIGN(ChannelPortMetadata bar_metadata,
-                           b->GetChannelPortMetadata("bar"));
+  XLS_ASSERT_OK_AND_ASSIGN(
+      ChannelPortMetadata bar_metadata,
+      b->GetChannelPortMetadata("bar", ChannelDirection::kSend));
   EXPECT_EQ(bar_metadata.channel_name, "bar");
   EXPECT_EQ(bar_metadata.type, pkg->GetBitsType(32));
-  EXPECT_EQ(bar_metadata.direction, PortDirection::kOutput);
+  EXPECT_EQ(bar_metadata.direction, ChannelDirection::kSend);
   EXPECT_EQ(bar_metadata.channel_kind, ChannelKind::kSingleValue);
   EXPECT_EQ(bar_metadata.flop_kind, FlopKind::kNone);
   EXPECT_THAT(bar_metadata.data_port, Optional(Eq("out")));
   EXPECT_EQ(bar_metadata.ready_port, std::nullopt);
   EXPECT_EQ(bar_metadata.valid_port, std::nullopt);
+}
+
+TEST(IrParserTest, BlockWithResetPort) {
+  constexpr std::string_view input = R"(package test
+
+block my_block(rst: bits[1]) {
+  #![reset(port="rst", asynchronous=true, active_low=false)]
+  rst: bits[1] = input_port(name=rst)
+}
+)";
+  XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<Package> pkg,
+                           Parser::ParsePackage(input));
+  XLS_ASSERT_OK_AND_ASSIGN(Block * b, pkg->GetBlock("my_block"));
+  EXPECT_THAT(
+      b->GetResetBehavior(),
+      Optional(ResetBehavior{.asynchronous = true, .active_low = false}));
 }
 
 }  // namespace xls

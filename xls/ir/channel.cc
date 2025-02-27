@@ -27,6 +27,7 @@
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/variant.h"
@@ -65,41 +66,41 @@ std::string FifoConfig::ToString() const {
       depth_, bypass_, register_push_outputs_, register_pop_outputs_);
 }
 
-absl::StatusOr<std::optional<FlopKind>> FlopKindFromProto(
-    ChannelConfigProto::FlopKind f) {
+namespace {
+
+FlopKindProto ToProtoFlop(std::optional<FlopKind> f) {
+  if (!f) {
+    return FLOP_KIND_DEFAULT;
+  }
+  switch (*f) {
+    case FlopKind::kNone:
+      return FLOP_KIND_NONE;
+    case FlopKind::kFlop:
+      return FLOP_KIND_FLOP;
+    case FlopKind::kSkid:
+      return FLOP_KIND_SKID;
+    case FlopKind::kZeroLatency:
+      return FLOP_KIND_ZERO_LATENCY;
+  }
+}
+}  // namespace
+
+absl::StatusOr<std::optional<FlopKind>> FlopKindFromProto(FlopKindProto f) {
   switch (f) {
-    case ChannelConfigProto::FLOP_KIND_DEFAULT:
+    case FLOP_KIND_DEFAULT:
       return std::nullopt;
-    case ChannelConfigProto::FLOP_KIND_NONE:
+    case FLOP_KIND_NONE:
       return FlopKind::kNone;
-    case ChannelConfigProto::FLOP_KIND_FLOP:
+    case FLOP_KIND_FLOP:
       return FlopKind::kFlop;
-    case ChannelConfigProto::FLOP_KIND_SKID:
+    case FLOP_KIND_SKID:
       return FlopKind::kSkid;
-    case ChannelConfigProto::FLOP_KIND_ZERO_LATENCY:
+    case FLOP_KIND_ZERO_LATENCY:
       return FlopKind::kZeroLatency;
     default:
       return absl::InternalError(absl::StrFormat("Unknown flop kind: %d", f));
   }
 }
-
-namespace {
-ChannelConfigProto::FlopKind ToProtoFlop(std::optional<FlopKind> f) {
-  if (!f) {
-    return ChannelConfigProto::FLOP_KIND_DEFAULT;
-  }
-  switch (*f) {
-    case FlopKind::kNone:
-      return ChannelConfigProto::FLOP_KIND_NONE;
-    case FlopKind::kFlop:
-      return ChannelConfigProto::FLOP_KIND_FLOP;
-    case FlopKind::kSkid:
-      return ChannelConfigProto::FLOP_KIND_SKID;
-    case FlopKind::kZeroLatency:
-      return ChannelConfigProto::FLOP_KIND_ZERO_LATENCY;
-  }
-}
-}  // namespace
 
 absl::StatusOr<FlopKind> StringToFlopKind(std::string_view str) {
   for (FlopKind f : {FlopKind::kNone, FlopKind::kFlop, FlopKind::kSkid,
@@ -111,6 +112,7 @@ absl::StatusOr<FlopKind> StringToFlopKind(std::string_view str) {
   return absl::InvalidArgumentError(
       absl::StrFormat("'%s' is not a valid flop kind", str));
 }
+
 /* static */ absl::StatusOr<ChannelConfig> ChannelConfig::FromProto(
     const ChannelConfigProto& proto) {
   std::optional<FifoConfig> fc;
@@ -168,7 +170,7 @@ std::string Channel::ToString() const {
         &result, "initial_values={%s}, ",
         absl::StrJoin(initial_values(), ", ", UntypedValueFormatter));
   }
-  absl::StrAppendFormat(&result, "id=%d, kind=%s, ops=%s, ", id(),
+  absl::StrAppendFormat(&result, "id=%d, kind=%s, ops=%s", id(),
                         ChannelKindToString(kind_),
                         ChannelOpsToString(supported_ops()));
 
@@ -176,7 +178,7 @@ std::string Channel::ToString() const {
     const StreamingChannel* streaming_channel =
         down_cast<const StreamingChannel*>(this);
     absl::StrAppendFormat(
-        &result, "flow_control=%s, strictness=%s, ",
+        &result, ", flow_control=%s, strictness=%s",
         FlowControlToString(streaming_channel->GetFlowControl()),
         ChannelStrictnessToString(streaming_channel->GetStrictness()));
     const std::optional<ChannelConfig>& channel_config =
@@ -185,8 +187,8 @@ std::string Channel::ToString() const {
       if (channel_config->fifo_config()) {
         absl::StrAppendFormat(
             &result,
-            "fifo_depth=%d, bypass=%s, "
-            "register_push_outputs=%s, register_pop_outputs=%s, ",
+            ", fifo_depth=%d, bypass=%s, "
+            "register_push_outputs=%s, register_pop_outputs=%s",
             channel_config->fifo_config()->depth(),
             channel_config->fifo_config()->bypass() ? "true" : "false",
             channel_config->fifo_config()->register_push_outputs() ? "true"
@@ -195,26 +197,17 @@ std::string Channel::ToString() const {
                                                                   : "false");
       }
       if (channel_config->input_flop_kind()) {
-        absl::StrAppendFormat(&result, "input_flop_kind=%v, ",
+        absl::StrAppendFormat(&result, ", input_flop_kind=%v",
                               *channel_config->input_flop_kind());
       }
       if (channel_config->output_flop_kind()) {
-        absl::StrAppendFormat(&result, "output_flop_kind=%v, ",
+        absl::StrAppendFormat(&result, ", output_flop_kind=%v",
                               *channel_config->output_flop_kind());
       }
     }
   }
 
-  std::string metadata_textproto;
-  google::protobuf::TextFormat::Printer printer;
-  printer.SetSingleLineMode(true);
-  printer.PrintToString(metadata(), &metadata_textproto);
-  if (!metadata_textproto.empty() && metadata_textproto.back() == ' ') {
-    metadata_textproto.pop_back();
-  }
-  absl::StrAppendFormat(&result, "metadata=\"\"\"%s\"\"\")",
-                        metadata_textproto);
-
+  absl::StrAppend(&result, ")");
   return result;
 }
 
@@ -289,28 +282,29 @@ std::ostream& operator<<(std::ostream& os, ChannelStrictness in) {
   return os;
 }
 
-std::string DirectionToString(Direction direction) {
+std::string ChannelDirectionToString(ChannelDirection direction) {
   switch (direction) {
-    case Direction::kSend:
+    case ChannelDirection::kSend:
       return "send";
-    case Direction::kReceive:
+    case ChannelDirection::kReceive:
       return "receive";
   }
 }
 
-absl::StatusOr<Direction> DirectionFromString(std::string_view str) {
+absl::StatusOr<ChannelDirection> ChannelDirectionFromString(
+    std::string_view str) {
   if (str == "send") {
-    return Direction::kSend;
+    return ChannelDirection::kSend;
   }
   if (str == "receive") {
-    return Direction::kReceive;
+    return ChannelDirection::kReceive;
   }
   return absl::InvalidArgumentError(
       absl::StrFormat("Invalid direction %s.", str));
 }
 
-std::ostream& operator<<(std::ostream& os, Direction direction) {
-  os << DirectionToString(direction);
+std::ostream& operator<<(std::ostream& os, ChannelDirection direction) {
+  os << ChannelDirectionToString(direction);
   return os;
 }
 
@@ -331,7 +325,7 @@ ChannelRef AsChannelRef(ReceiveChannelRef ref) {
 SendChannelRef AsSendChannelRefOrDie(ChannelRef ref) {
   if (std::holds_alternative<ChannelReference*>(ref)) {
     ChannelReference* cref = std::get<ChannelReference*>(ref);
-    CHECK_EQ(cref->direction(), Direction::kSend);
+    CHECK_EQ(cref->direction(), ChannelDirection::kSend);
     return down_cast<SendChannelReference*>(cref);
   }
   return std::get<Channel*>(ref);
@@ -340,7 +334,7 @@ SendChannelRef AsSendChannelRefOrDie(ChannelRef ref) {
 ReceiveChannelRef AsReceiveChannelRefOrDie(ChannelRef ref) {
   if (std::holds_alternative<ChannelReference*>(ref)) {
     ChannelReference* cref = std::get<ChannelReference*>(ref);
-    CHECK_EQ(cref->direction(), Direction::kReceive);
+    CHECK_EQ(cref->direction(), ChannelDirection::kReceive);
     return down_cast<ReceiveChannelReference*>(cref);
   }
   return std::get<Channel*>(ref);
@@ -384,7 +378,7 @@ std::string ChannelReference::ToString() const {
         "strictness=%s", ChannelStrictnessToString(strictness_.value())));
   }
   return absl::StrFormat("%s: %s %s %s", name(), type()->ToString(),
-                         direction() == Direction::kSend ? "out" : "in",
+                         direction() == ChannelDirection::kSend ? "out" : "in",
                          absl::StrJoin(keyword_strs, " "));
 }
 

@@ -43,6 +43,7 @@
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
 #include "xls/passes/dce_pass.h"
+#include "xls/passes/optimization_pass.h"
 #include "xls/passes/pass_base.h"
 
 namespace xls {
@@ -263,8 +264,6 @@ absl::StatusOr<Function*> UnrollProcToFunction(Proc* p,
                                                const Value& token_value) {
   XLS_RET_CHECK_GT(activation_count, 0)
       << "At least one activation is required.";
-  XLS_RET_CHECK(!p->next_values().empty() || p->NextState().empty())
-      << "Only procs using 'next-node' style are supported.";
   if (include_state) {
     XLS_RET_CHECK(
         !p->StateElements().empty() ||
@@ -324,8 +323,9 @@ absl::StatusOr<Function*> UnrollProcToFunction(Proc* p,
   // might as well get rid of them to avoid making z3 scan through them.
   DeadCodeEliminationPass dce;
   PassResults pass_results;
+  OptimizationContext context;
   XLS_RETURN_IF_ERROR(
-      dce.RunOnFunctionBase(result, {}, &pass_results).status());
+      dce.RunOnFunctionBase(result, {}, &pass_results, &context).status());
 
   VLOG(2) << "Proc: \n" << p->DumpIr() << "To Func: \n" << result->DumpIr();
 

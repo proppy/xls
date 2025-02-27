@@ -48,15 +48,15 @@ using ::testing::StartsWith;
 using ::testing::UnorderedElementsAre;
 
 enum class NextValueType : std::uint8_t {
-  kNextStateElements,
+  kNextStateVector,
   kNextValueNodes,
 };
 
 template <typename Sink>
 void AbslStringify(Sink& sink, NextValueType e) {
   absl::Format(&sink, "%s",
-               e == NextValueType::kNextStateElements ? "NextStateElements"
-                                                      : "NextValueNodes");
+               e == NextValueType::kNextStateVector ? "NextStateVector"
+                                                    : "NextValueNodes");
 }
 
 class ProcStateFlatteningPassTest
@@ -68,7 +68,7 @@ class ProcStateFlatteningPassTest
   absl::StatusOr<Proc*> BuildProc(ProcBuilder& pb,
                                   absl::Span<const BValue> next_state) {
     switch (GetParam()) {
-      case NextValueType::kNextStateElements:
+      case NextValueType::kNextStateVector:
         return pb.Build(next_state);
       case NextValueType::kNextValueNodes: {
         for (int64_t index = 0; index < next_state.size(); ++index) {
@@ -84,7 +84,7 @@ class ProcStateFlatteningPassTest
   absl::StatusOr<Proc*> BuildProc(TokenlessProcBuilder& pb,
                                   absl::Span<const BValue> next_state) {
     switch (GetParam()) {
-      case NextValueType::kNextStateElements:
+      case NextValueType::kNextStateVector:
         return pb.Build(next_state);
       case NextValueType::kNextValueNodes: {
         for (int64_t index = 0; index < next_state.size(); ++index) {
@@ -100,16 +100,19 @@ class ProcStateFlatteningPassTest
 
   absl::StatusOr<bool> Run(Package* p) {
     PassResults results;
+    OptimizationContext context;
     XLS_ASSIGN_OR_RETURN(bool changed,
                          ProcStateTupleFlatteningPass().Run(
-                             p, OptimizationPassOptions(), &results));
+                             p, OptimizationPassOptions(), &results, &context));
     // Run dataflow_simplification and dce to clean things up.
-    XLS_RETURN_IF_ERROR(DataflowSimplificationPass()
-                            .Run(p, OptimizationPassOptions(), &results)
-                            .status());
-    XLS_RETURN_IF_ERROR(DeadCodeEliminationPass()
-                            .Run(p, OptimizationPassOptions(), &results)
-                            .status());
+    XLS_RETURN_IF_ERROR(
+        DataflowSimplificationPass()
+            .Run(p, OptimizationPassOptions(), &results, &context)
+            .status());
+    XLS_RETURN_IF_ERROR(
+        DeadCodeEliminationPass()
+            .Run(p, OptimizationPassOptions(), &results, &context)
+            .status());
     return changed;
   }
 };
@@ -213,13 +216,9 @@ TEST_P(ProcStateFlatteningPassTest, TrivialTupleState) {
 
   EXPECT_EQ(proc->GetStateRead(int64_t{0})->GetName(), "x__1");
   EXPECT_EQ(proc->GetStateElement(0)->initial_value(), Value(UBits(42, 32)));
-  if (GetParam() == NextValueType::kNextStateElements) {
-    EXPECT_THAT(proc->GetNextStateElement(0), m::StateRead("x"));
-  } else {
-    EXPECT_THAT(
-        proc->next_values(proc->GetStateRead(int64_t{0})),
-        UnorderedElementsAre(m::Next(m::StateRead("x"), m::StateRead("x"))));
-  }
+  EXPECT_THAT(
+      proc->next_values(proc->GetStateRead(int64_t{0})),
+      UnorderedElementsAre(m::Next(m::StateRead("x"), m::StateRead("x"))));
 }
 
 TEST_P(ProcStateFlatteningPassTest, TrivialTupleStateWithNextExpression) {
@@ -338,7 +337,7 @@ TEST_P(ProcStateFlatteningPassTest, NextPredicateIsState) {
 }
 
 INSTANTIATE_TEST_SUITE_P(NextValueTypes, ProcStateFlatteningPassTest,
-                         testing::Values(NextValueType::kNextStateElements,
+                         testing::Values(NextValueType::kNextStateVector,
                                          NextValueType::kNextValueNodes),
                          testing::PrintToStringParamName());
 

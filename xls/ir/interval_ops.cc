@@ -26,8 +26,10 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "xls/common/iter_util.h"
+#include "xls/common/iterator_range.h"
 #include "xls/ir/bits.h"
 #include "xls/ir/bits_ops.h"
 #include "xls/ir/interval.h"
@@ -78,6 +80,10 @@ IntervalSet FromTernary(TernarySpan tern, int64_t max_interval_bits) {
   if (ternary_ops::IsFullyKnown(tern)) {
     return IntervalSet::Precise(ternary_ops::ToKnownBitsValues(tern));
   }
+
+  Bits lb = ternary_ops::ToKnownBitsValues(tern, /*default_set=*/false);
+  Bits ub = ternary_ops::ToKnownBitsValues(tern, /*default_set=*/true);
+
   // How many trailing bits are unknown. This defines the size of each group.
   int64_t lsb_xs = absl::c_find_if(tern, ternary_ops::IsKnown) - tern.cbegin();
   // Find where we need to extend the unknown region to.
@@ -100,9 +106,10 @@ IntervalSet FromTernary(TernarySpan tern, int64_t max_interval_bits) {
   if (x_locations.empty()) {
     // All bits from 0 -> lsb_xs are unknown.
     Bits high_bits = ternary_ops::ToKnownBitsValues(tern.subspan(lsb_xs));
-    is.AddInterval(
-        Interval::Closed(bits_ops::Concat({high_bits, Bits(lsb_xs)}),
-                         bits_ops::Concat({high_bits, Bits::AllOnes(lsb_xs)})));
+    is.AddInterval(Interval::Closed(
+        bits_ops::UMax(lb, bits_ops::Concat({high_bits, Bits(lsb_xs)})),
+        bits_ops::UMin(ub,
+                       bits_ops::Concat({high_bits, Bits::AllOnes(lsb_xs)}))));
     is.Normalize();
     return is;
   }
@@ -114,8 +121,9 @@ IntervalSet FromTernary(TernarySpan tern, int64_t max_interval_bits) {
   Bits high_lsb = Bits::AllOnes(lsb_xs);
   Bits low_lsb(lsb_xs);
   for (const Bits& v : ternary_ops::AllBitsValues(vec)) {
-    is.AddInterval(Interval::Closed(bits_ops::Concat({v, low_lsb}),
-                                    bits_ops::Concat({v, high_lsb})));
+    is.AddInterval(
+        Interval::Closed(bits_ops::UMax(lb, bits_ops::Concat({v, low_lsb})),
+                         bits_ops::UMin(ub, bits_ops::Concat({v, high_lsb}))));
   }
   is.Normalize();
   return is;
@@ -246,7 +254,14 @@ bool CoversTernary(const IntervalSet& intervals, TernarySpan ternary) {
 }
 
 namespace {
+
 enum class Tonicity : bool { Monotone, Antitone };
+
+Tonicity Opposite(Tonicity tonicity) {
+  return tonicity == Tonicity::Monotone ? Tonicity::Antitone
+                                        : Tonicity::Monotone;
+}
+
 // What sort of behavior the argument exhibits
 struct ArgumentBehavior {
   // Whether increasing the value of this argument causes the output value to
@@ -265,12 +280,25 @@ struct ArgumentBehavior {
   // results end up far away from each other.
   bool sign_sensitive;
 
+  // The set of other arguments whose sign can flip this argument's tonicity.
+  // For example, arithmetic shift-right is antitone in its second operand if
+  // the first operand is positive, but monotone if the first operand is
+  // negative.
+  std::vector<int64_t> sign_sensitive_tonicity = {};
+
   constexpr ArgumentBehavior SignSensitive() const {
     return {
         .tonicity = tonicity,
         .size_preserving = sign_sensitive,
         .sign_sensitive = true,
+        .sign_sensitive_tonicity = sign_sensitive_tonicity,
     };
+  }
+
+  constexpr ArgumentBehavior AddSignSensitiveTonicity(int64_t i) const {
+    ArgumentBehavior res = *this;
+    res.sign_sensitive_tonicity.push_back(i);
+    return res;
   }
 };
 
@@ -321,11 +349,70 @@ struct OverflowResult {
 template <typename Calculate>
   requires(
       std::is_invocable_r_v<OverflowResult, Calculate, absl::Span<Bits const>>)
+std::optional<IntervalSet> MaybePerformExactCalculation(
+    Calculate calc, absl::Span<ArgumentBehavior const> behaviors,
+    absl::Span<IntervalSet const> input_operands, int64_t result_bit_size) {
+  // If all arguments are size-preserving we don't need to do anything at all
+  // since the preserving property ensures that precision is maintained.
+  if (absl::c_all_of(behaviors, [](const ArgumentBehavior& b) {
+        return b.size_preserving;
+      })) {
+    return std::nullopt;
+  }
+  // How many exact calculations we are willing to perform.
+  static constexpr int64_t kMaxExactCalculations = 16;
+  int64_t required_calculations = 1;
+  for (const IntervalSet& is : input_operands) {
+    // required_calculations *= is.Size();
+    auto size = is.Size();
+    if (!size || *size > kMaxExactCalculations || *size <= 0 ||
+        required_calculations * (*size) > kMaxExactCalculations) {
+      return std::nullopt;
+    }
+    required_calculations *= *size;
+  }
+
+  VLOG(3) << "Doing " << required_calculations << " exact calculations";
+
+  // We have a small number of actual values to try, just try all of them for
+  // best precision.
+  using ValueIter = xabsl::iterator_range<IntervalSet::ValuesIterator>;
+  std::vector<ValueIter> intervals;
+  intervals.reserve(input_operands.size());
+  for (const IntervalSet& i : input_operands) {
+    intervals.push_back(i.Values());
+  }
+  IntervalSet results(result_bit_size);
+  auto handle_combo =
+      [&](absl::Span<const IntervalSet::ValuesIterator> values_ptrs) -> bool {
+    std::vector<Bits> values;
+    values.reserve(values_ptrs.size());
+    for (const auto& value_ptr : values_ptrs) {
+      values.push_back(*value_ptr);
+    }
+    results.AddInterval(Interval::Precise(calc(values).result));
+    return false;
+  };
+  IteratorProduct<ValueIter>(intervals, handle_combo);
+  results.Normalize();
+  return std::move(results);
+}
+
+template <typename Calculate>
+  requires(
+      std::is_invocable_r_v<OverflowResult, Calculate, absl::Span<Bits const>>)
 IntervalSet PerformVariadicOp(Calculate calc,
                               absl::Span<ArgumentBehavior const> behaviors,
                               absl::Span<IntervalSet const> input_operands,
                               int64_t result_bit_size) {
   CHECK_EQ(input_operands.size(), behaviors.size());
+
+  std::optional<IntervalSet> exact_result = MaybePerformExactCalculation(
+      calc, behaviors, input_operands, result_bit_size);
+  if (exact_result) {
+    // VLOG(2) << "Got exact results: " << exact_result->ToString();
+    return *exact_result;
+  }
 
   std::vector<IntervalSet> operands;
   operands.reserve(input_operands.size());
@@ -386,13 +473,34 @@ IntervalSet PerformVariadicOp(Calculate calc,
   // intervals from each interval set associated with a parameter.
   auto handle_combo =
       [&](auto /*absl::Span<Iterator of Interval>*/ values_ptrs) -> bool {
+    enum class Sign : uint8_t { kPositive, kNegative, kUnknown };
+    std::vector<Sign> signs;
+    signs.reserve(values_ptrs.size());
+    for (int64_t i = 0; i < values_ptrs.size(); ++i) {
+      if (behaviors[i].sign_sensitive) {
+        const Interval& interval = *values_ptrs[i];
+        CHECK_EQ(interval.LowerBound().msb(), interval.UpperBound().msb());
+        signs.push_back(interval.LowerBound().msb() ? Sign::kNegative
+                                                    : Sign::kPositive);
+      } else {
+        signs.push_back(Sign::kUnknown);
+      }
+    }
+
     std::vector<Bits> lower_bounds;
     lower_bounds.reserve(values_ptrs.size());
     std::vector<Bits> upper_bounds;
     upper_bounds.reserve(values_ptrs.size());
     for (int64_t i = 0; i < values_ptrs.size(); ++i) {
       Interval interval = *values_ptrs[i];
-      switch (behaviors[i].tonicity) {
+      Tonicity tonicity = behaviors[i].tonicity;
+      for (int64_t j : behaviors[i].sign_sensitive_tonicity) {
+        CHECK(signs[j] != Sign::kUnknown);
+        if (signs[j] == Sign::kNegative) {
+          tonicity = Opposite(tonicity);
+        }
+      }
+      switch (tonicity) {
         case Tonicity::Monotone: {
           // The essential property of a unary monotone function `f` is that
           // the codomain of `f` applied to `[x, y]` is `[f(x), f(y)]`.
@@ -719,6 +827,120 @@ IntervalSet UDiv(const IntervalSet& a, const IntervalSet& b) {
   results.Normalize();
   return results;
 }
+IntervalSet UMod(const IntervalSet& a, const IntervalSet& b) {
+  // Integer modulus is a complex case. The result is restricted to be less than
+  // `b`, but we also can get more information out of intervals in `a` if (e.g.)
+  // `b` is precise and `a` contains intervals with fewer than `b` values in
+  // them.
+  if (b.UpperBound()->IsZero()) {
+    return IntervalSet::Of({Interval::Precise(Bits(a.BitCount()))});
+  }
+  // TODO(epastor): Extract more information when we can.
+  return IntervalSet::Of(
+      {Interval::RightOpen(Bits(a.BitCount()), *b.UpperBound())});
+}
+IntervalSet SMul(const IntervalSet& a, const IntervalSet& b,
+                 int64_t output_bitwidth) {
+  // Tonality depends on the sign of both sides so its easiest to simply
+  // calculate the 4 segments and combine them.
+  IntervalSet pos_a = a.PositiveIntervals(/*with_zero=*/false);
+  IntervalSet pos_b = b.PositiveIntervals(/*with_zero=*/false);
+  IntervalSet neg_a = a.NegativeAbsoluteIntervals();
+  IntervalSet neg_b = b.NegativeAbsoluteIntervals();
+  // Positive intervals
+  IntervalSet pos_pos = UMul(pos_a, pos_b, output_bitwidth);
+  IntervalSet neg_neg = UMul(neg_a, neg_b, output_bitwidth);
+  IntervalSet positives = IntervalSet::Combine(pos_pos, neg_neg);
+  if (a.CoversZero() || b.CoversZero()) {
+    positives = IntervalSet::Combine(
+        positives,
+        IntervalSet::Of({Interval::Precise(UBits(0, output_bitwidth))}));
+  }
+  // Negative intervals
+  IntervalSet pos_neg = UMul(pos_a, neg_b, output_bitwidth);
+  IntervalSet neg_pos = UMul(neg_a, pos_b, output_bitwidth);
+  IntervalSet negatives = Neg(IntervalSet::Combine(pos_neg, neg_pos));
+  return IntervalSet::Combine(positives, negatives);
+}
+
+IntervalSet SDiv(const IntervalSet& a, const IntervalSet& b) {
+  // Tonality depends on the sign of both sides so its easiest to simply
+  // calculate the 4 segments and combine them.
+  IntervalSet pos_a = a.PositiveIntervals(/*with_zero=*/false);
+  IntervalSet pos_b = b.PositiveIntervals(/*with_zero=*/false);
+  IntervalSet neg_a = a.NegativeAbsoluteIntervals();
+  IntervalSet neg_b = b.NegativeAbsoluteIntervals();
+
+  IntervalSet pos_pos = UDiv(pos_a, pos_b);
+  IntervalSet neg_neg = UDiv(neg_a, neg_b);
+  IntervalSet positives = IntervalSet::Combine(pos_pos, neg_neg);
+  IntervalSet pos_neg = UDiv(pos_a, neg_b);
+  IntervalSet neg_pos = UDiv(neg_a, pos_b);
+  IntervalSet negatives = Neg(IntervalSet::Combine(pos_neg, neg_pos));
+
+  IntervalSet res = IntervalSet::Combine(positives, negatives);
+
+  // Add in the values if there are zeros
+  if (a.CoversZero()) {
+    res.AddInterval(Interval::Precise(UBits(0, a.BitCount())));
+  }
+  if (b.CoversZero()) {
+    if (!a.LowerBound() || !a.LowerBound()->msb()) {
+      res.AddInterval(Interval::Precise(Bits::MaxSigned(a.BitCount())));
+    }
+    if (!a.UpperBound() || a.UpperBound()->msb()) {
+      res.AddInterval(Interval::Precise(Bits::MinSigned(a.BitCount())));
+    }
+  }
+  res.Normalize();
+  return res;
+}
+IntervalSet SMod(const IntervalSet& a, const IntervalSet& b) {
+  // Integer modulus is a complex case. The result is restricted to be less than
+  // `b` (in absolute value), but we also can get more information out of
+  // intervals in `a` if (e.g.) `b` is precise and `a` contains intervals with
+  // fewer than `b` values in them.
+
+  // TODO(epastor): Extract more information when we can.
+  Bits absolute_b_bound(b.BitCount());
+  for (const Interval& i : b.SignedIntervals()) {
+    absolute_b_bound =
+        bits_ops::UMax(absolute_b_bound, bits_ops::Abs(i.LowerBound()));
+    absolute_b_bound =
+        bits_ops::UMax(absolute_b_bound, bits_ops::Abs(i.UpperBound()));
+  }
+  if (absolute_b_bound.IsZero()) {
+    return IntervalSet::Of({Interval::Precise(Bits(a.BitCount()))});
+  }
+  return IntervalSet::Of(
+      {Interval::Open(bits_ops::Negate(absolute_b_bound), absolute_b_bound)});
+}
+
+IntervalSet Shll(const IntervalSet& a, const IntervalSet& b) {
+  return PerformBinOp(
+      [](const Bits& lhs, const Bits& rhs) -> OverflowResult {
+        if (rhs.IsZero()) {
+          return {.result = lhs};
+        }
+        int64_t shift_amount = bits_ops::UnsignedBitsToSaturatedInt64(rhs);
+        if (shift_amount >= lhs.bit_count()) {
+          // We must be overshifting; the result is zero.
+          return {.result = Bits(lhs.bit_count()),
+                  .first_overflow_bit = !lhs.IsZero(),
+                  .second_overflow_bit =
+                      !lhs.IsZero() &&
+                      (shift_amount > lhs.bit_count() || !lhs.IsOne())};
+        }
+        Bits shifted_out =
+            lhs.Slice(lhs.bit_count() - shift_amount, shift_amount);
+        return {.result = bits_ops::ShiftLeftLogical(lhs, shift_amount),
+                .first_overflow_bit = !shifted_out.IsZero(),
+                .second_overflow_bit =
+                    !shifted_out.IsZero() && !shifted_out.IsOne()};
+      },
+      a, kMonotoneNonSizePreserving, b, kMonotoneNonSizePreserving,
+      a.BitCount());
+}
 IntervalSet Shrl(const IntervalSet& a, const IntervalSet& b) {
   return PerformBinOp(
       [](const Bits& lhs, const Bits& rhs) -> OverflowResult {
@@ -733,6 +955,23 @@ IntervalSet Shrl(const IntervalSet& a, const IntervalSet& b) {
       },
       a, kMonotoneNonSizePreserving, b, kAntitoneNonSizePreserving,
       a.BitCount());
+}
+IntervalSet Shra(const IntervalSet& a, const IntervalSet& b) {
+  return PerformBinOp(
+      [](const Bits& lhs, const Bits& rhs) -> OverflowResult {
+        absl::StatusOr<uint64_t> shift_amount = rhs.ToUint64();
+        if (!shift_amount.ok() ||
+            *shift_amount >
+                static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+          // We must be overshifting; the result is zero (if the sign bit was
+          // zero) or all ones (if the sign bit was one).
+          return {.result = lhs.msb() ? Bits::AllOnes(lhs.bit_count())
+                                      : Bits(lhs.bit_count())};
+        }
+        return {.result = bits_ops::ShiftRightArith(lhs, *shift_amount)};
+      },
+      a, kMonotoneNonSizePreserving.SignSensitive(), b,
+      kAntitoneNonSizePreserving.AddSignSensitiveTonicity(0), a.BitCount());
 }
 IntervalSet Decode(const IntervalSet& a, int64_t width) {
   IntervalSet result(width);
@@ -967,21 +1206,26 @@ IntervalSet Ne(const IntervalSet& a, const IntervalSet& b) {
 }
 
 IntervalSet ULt(const IntervalSet& a, const IntervalSet& b) {
-  Interval lhs_hull = *a.ConvexHull();
-  Interval rhs_hull = *b.ConvexHull();
-  if (Interval::Disjoint(lhs_hull, rhs_hull)) {
-    return TernaryToOneBitRange(lhs_hull < rhs_hull ? TernaryValue::kKnownOne
-                                                    : TernaryValue::kKnownZero);
+  CHECK_EQ(a.BitCount(), b.BitCount());
+  if (a.IsPrecise() && a.GetPreciseValue() == Bits::AllOnes(a.BitCount())) {
+    // If a is all ones, then it is not less than any value.
+    return TernaryToOneBitRange(TernaryValue::kKnownZero);
   }
-  return TernaryToOneBitRange(TernaryValue::kUnknown);
-}
-
-IntervalSet UGt(const IntervalSet& a, const IntervalSet& b) {
+  if (b.IsPrecise() && b.GetPreciseValue() == Bits(b.BitCount())) {
+    // If b is zero, then it is not greater than any value.
+    return TernaryToOneBitRange(TernaryValue::kKnownZero);
+  }
   Interval lhs_hull = *a.ConvexHull();
   Interval rhs_hull = *b.ConvexHull();
-  if (Interval::Disjoint(lhs_hull, rhs_hull)) {
-    return TernaryToOneBitRange(lhs_hull > rhs_hull ? TernaryValue::kKnownOne
-                                                    : TernaryValue::kKnownZero);
+  if (bits_ops::ULessThan(lhs_hull.UpperBound(), rhs_hull.LowerBound())) {
+    // The LHS is entirely below the RHS, so all possibilities are less than.
+    return TernaryToOneBitRange(TernaryValue::kKnownOne);
+  }
+  if (bits_ops::ULessThanOrEqual(rhs_hull.UpperBound(),
+                                 lhs_hull.LowerBound())) {
+    // The RHS is entirely below the LHS (except for at most a single point of
+    // overlap), so the LHS can't be less than.
+    return TernaryToOneBitRange(TernaryValue::kKnownZero);
   }
   return TernaryToOneBitRange(TernaryValue::kUnknown);
 }
@@ -1002,31 +1246,9 @@ IntervalSet SLt(const IntervalSet& a, const IntervalSet& b) {
     // compare.
     return ULt(a, b);
   }
-  IntervalSet offset = IntervalSet::Precise(
-      bits_ops::Concat({UBits(1, 1), Bits(a.BitCount() - 1)}));
+  IntervalSet offset =
+      IntervalSet::Precise(Bits::PowerOfTwo(a.BitCount() - 1, a.BitCount()));
   return ULt(Add(a, offset), Add(b, offset));
-}
-
-IntervalSet SGt(const IntervalSet& a, const IntervalSet& b) {
-  CHECK(a.IsNormalized());
-  CHECK(b.IsNormalized());
-  auto is_all_negative = [](const IntervalSet& v) {
-    return v.LowerBound()->GetFromMsb(0) && v.UpperBound()->GetFromMsb(0);
-  };
-  auto is_all_positive = [](const IntervalSet& v) {
-    return !v.LowerBound()->GetFromMsb(0) && !v.UpperBound()->GetFromMsb(0);
-  };
-  // Avoid doing the add if possible.
-  if ((is_all_positive(a) && is_all_positive(b)) ||
-      (is_all_negative(a) && is_all_negative(b))) {
-    // Entire range is positive or negative on both args. Can do an unsigned
-    // compare.
-    return UGt(a, b);
-  }
-  // Offset by signed-max and compare.
-  IntervalSet offset = IntervalSet::Precise(
-      bits_ops::Concat({UBits(1, 1), Bits(a.BitCount() - 1)}));
-  return UGt(Add(a, offset), Add(b, offset));
 }
 
 IntervalSet Gate(const IntervalSet& cond, const IntervalSet& val) {

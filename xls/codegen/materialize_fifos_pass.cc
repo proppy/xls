@@ -38,14 +38,13 @@
 #include "xls/ir/register.h"
 #include "xls/ir/source_location.h"
 #include "xls/ir/type.h"
-#include "xls/ir/value.h"
-#include "xls/ir/value_utils.h"
 
 namespace xls::verilog {
 namespace {
 absl::StatusOr<Block*> MaterializeFifo(NameUniquer& uniquer, Package* p,
                                        FifoInstantiation* inst,
-                                       const xls::Reset& reset_behavior) {
+                                       const ResetBehavior& reset_behavior,
+                                       std::string_view reset_name) {
   const FifoConfig& config = inst->fifo_config();
   const int64_t depth = config.depth();
   const bool bypass = config.bypass();
@@ -66,7 +65,7 @@ absl::StatusOr<Block*> MaterializeFifo(NameUniquer& uniquer, Package* p,
                       register_push ? "_register_push" : "")),
                   p);
   XLS_RETURN_IF_ERROR(bb.AddClockPort("clk"));
-  BValue reset_port = bb.ResetPort(FifoInstantiation::kResetPortName);
+  BValue reset_port = bb.ResetPort(reset_name, reset_behavior);
 
   BValue one_lit = bb.Literal(UBits(1, ptr_type->GetFlatBitCount()));
   BValue depth_lit = bb.Literal(UBits(depth, ptr_type->GetFlatBitCount()));
@@ -81,32 +80,16 @@ absl::StatusOr<Block*> MaterializeFifo(NameUniquer& uniquer, Package* p,
 
   XLS_ASSIGN_OR_RETURN(
       Register * buf_reg,
-      bb.block()->AddRegister(
-          "buf", buf_type,
-          xls::Reset{.reset_value = ZeroOfType(buf_type),
-                     .asynchronous = reset_behavior.asynchronous,
-                     .active_low = reset_behavior.active_low}));
+      bb.block()->AddRegisterWithZeroResetValue("buf", buf_type));
   XLS_ASSIGN_OR_RETURN(
       Register * head_reg,
-      bb.block()->AddRegister(
-          "head", ptr_type,
-          xls::Reset{.reset_value = ZeroOfType(ptr_type),
-                     .asynchronous = reset_behavior.asynchronous,
-                     .active_low = reset_behavior.active_low}));
+      bb.block()->AddRegisterWithZeroResetValue("head", ptr_type));
   XLS_ASSIGN_OR_RETURN(
       Register * tail_reg,
-      bb.block()->AddRegister(
-          "tail", ptr_type,
-          xls::Reset{.reset_value = ZeroOfType(ptr_type),
-                     .asynchronous = reset_behavior.asynchronous,
-                     .active_low = reset_behavior.active_low}));
+      bb.block()->AddRegisterWithZeroResetValue("tail", ptr_type));
   XLS_ASSIGN_OR_RETURN(
       Register * slots_reg,
-      bb.block()->AddRegister(
-          "slots", ptr_type,
-          xls::Reset{.reset_value = ZeroOfType(ptr_type),
-                     .asynchronous = reset_behavior.asynchronous,
-                     .active_low = reset_behavior.active_low}));
+      bb.block()->AddRegisterWithZeroResetValue("slots", ptr_type));
 
   BValue buf = bb.RegisterRead(buf_reg);
   BValue head = bb.RegisterRead(head_reg, SourceInfo(), "head_ptr");
@@ -123,18 +106,10 @@ absl::StatusOr<Block*> MaterializeFifo(NameUniquer& uniquer, Package* p,
   if (register_pop) {
     XLS_ASSIGN_OR_RETURN(
         pop_valid_reg,
-        bb.block()->AddRegister(
-            "pop_valid_reg", u1, /*reset=*/
-            xls::Reset{.reset_value = Value::Bool(false),
-                       .asynchronous = reset_behavior.asynchronous,
-                       .active_low = reset_behavior.active_low}));
+        bb.block()->AddRegisterWithZeroResetValue("pop_valid_reg", u1));
     XLS_ASSIGN_OR_RETURN(
         pop_data_reg,
-        bb.block()->AddRegister(
-            "pop_data_reg", ty, /*reset=*/
-            xls::Reset{.reset_value = ZeroOfType(ty),
-                       .asynchronous = reset_behavior.asynchronous,
-                       .active_low = reset_behavior.active_low}));
+        bb.block()->AddRegisterWithZeroResetValue("pop_data_reg", ty));
     pop_valid_reg_read = bb.RegisterRead(*pop_valid_reg);
     depth_lit = bb.Add(depth_lit, bb.ZeroExtend(*pop_valid_reg_read,
                                                 ptr_type->GetFlatBitCount()));
@@ -292,12 +267,32 @@ absl::StatusOr<bool> MaterializeFifosPass::RunInternal(
   // Intermediate list new blocks created.
 
   absl::flat_hash_map<xls::Instantiation*, Block*> impls;
+  XLS_RET_CHECK(options.codegen_options.GetResetBehavior().has_value())
+      << "Reset behavior must be set to materialize fifos";
+  XLS_RET_CHECK(options.codegen_options.reset().has_value())
+      << "Fifo materialization requires reset";
+  XLS_RET_CHECK(options.codegen_options.reset().value().has_name())
+      << "Fifo materialization requires reset name";
+  std::string_view reset_name = options.codegen_options.reset().value().name();
+
   for (FifoInstantiation* f : insts) {
-    XLS_RET_CHECK(options.codegen_options.ResetBehavior().has_value())
-        << "Reset behavior must be set to materialize fifos";
     XLS_ASSIGN_OR_RETURN(
         impls[f], MaterializeFifo(uniquer, unit->package, f,
-                                  *options.codegen_options.ResetBehavior()));
+                                  *options.codegen_options.GetResetBehavior(),
+                                  reset_name));
+  }
+
+  // The name of the reset port of the materialized FIFO is given by the codegen
+  // options and hence migth differ from the name of the reset port of the
+  // original fifo instantiation (which is always
+  // FifoInstantiation::kResetPortName). This ensure the materialized fifo block
+  // behaves like any other require any special handling and acts like any other
+  // and does not require special handling. This needs to be taken into account
+  // when replacing the fifo instantiation with instantiation of the
+  // materialized fifo:
+  absl::flat_hash_map<std::string, std::string> port_renaming_rules = {};
+  if (reset_name != FifoInstantiation::kResetPortName) {
+    port_renaming_rules[FifoInstantiation::kResetPortName] = reset_name;
   }
 
   std::vector<Block*> saved_blocks(elab.blocks().begin(), elab.blocks().end());
@@ -313,7 +308,8 @@ absl::StatusOr<bool> MaterializeFifosPass::RunInternal(
           b->AddBlockInstantiation(
               absl::StrFormat("materialized_fifo_%s_", i->name()),
               impls.at(i)));
-      XLS_RETURN_IF_ERROR(b->ReplaceInstantiationWith(i, new_inst));
+      XLS_RETURN_IF_ERROR(
+          b->ReplaceInstantiationWith(i, new_inst, port_renaming_rules));
     }
   }
 

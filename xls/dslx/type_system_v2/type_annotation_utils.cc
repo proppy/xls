@@ -14,6 +14,7 @@
 
 #include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -23,13 +24,16 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/substitute.h"
 #include "absl/types/variant.h"
+#include "xls/common/casts.h"
 #include "xls/common/status/status_macros.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/errors.h"
@@ -37,62 +41,98 @@
 #include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/module.h"
 #include "xls/dslx/frontend/pos.h"
-#include "xls/ir/bits.h"
 #include "xls/ir/number_parser.h"
 
 namespace xls::dslx {
 namespace {
 
-std::optional<const StructDefBase*> GetStructOrProcDef(
-    const TypeAnnotation* annotation) {
-  const auto* type_ref_annotation =
-      dynamic_cast<const TypeRefTypeAnnotation*>(annotation);
-  if (type_ref_annotation == nullptr) {
-    return std::nullopt;
+Expr* CreateElementCountInvocation(Module& module, TypeAnnotation* annotation) {
+  NameRef* bit_count =
+      module.Make<NameRef>(annotation->span(), "element_count",
+                           module.GetOrCreateBuiltinNameDef("element_count"));
+  return module.Make<Invocation>(annotation->span(), bit_count,
+                                 std::vector<Expr*>{},
+                                 std::vector<ExprOrType>{annotation});
+}
+
+Number* CreateS32Zero(Module& module, const Span& span) {
+  return module.Make<Number>(span, "0", NumberKind::kOther,
+                             CreateS32Annotation(module, span));
+}
+
+// Expands the `Expr` for a slice bound, which may be `nullptr`, into its
+// longhand form. For example, in `x[-3:]`, the `-3` actually means
+// `element_count<typeof(x)>() - 3`. The null `Expr` for the RHS bound means
+// `element_count<typeof(x)>()`. Since it's not in a position to decide whether
+// a non-null expr is negative, this utility will produce an `Expr` like `if
+// bound < 0 { element_count<typeof(x)> + bound } else { bound }` and ultimately
+// `ConstExprEvaluator`, given the right context, can evaluate that.
+// TODO - https://github.com/google/xls/issues/193: The bounds are supposed to
+// be clamped such that the expanded start is in [0, element_count<typeof(x)>())
+// and the expanded limit is in [start, element_count<typeof(x)>()). We should
+// add an integer clamping builtin and do this in a follow-up, because it would
+// be quite messy without that.
+absl::StatusOr<Expr*> ExpandSliceBoundExpr(Module& module,
+                                           TypeAnnotation* source_array_type,
+                                           Expr* bound, bool start) {
+  if (bound == nullptr) {
+    return start ? CreateS32Zero(module, source_array_type->span())
+                 : CreateElementCountInvocation(module, source_array_type);
   }
-  const TypeDefinition& def =
-      type_ref_annotation->type_ref()->type_definition();
-  return absl::visit(
-      Visitor{[](TypeAlias* alias) -> std::optional<const StructDefBase*> {
-                return GetStructOrProcDef(&alias->type_annotation());
-              },
-              [](StructDef* struct_def) -> std::optional<const StructDefBase*> {
-                return struct_def;
-              },
-              [](ProcDef* proc_def) -> std::optional<const StructDefBase*> {
-                return proc_def;
-              },
-              [](ColonRef* colon_ref) -> std::optional<const StructDefBase*> {
-                if (std::holds_alternative<TypeRefTypeAnnotation*>(
-                        colon_ref->subject())) {
-                  return GetStructOrProcDef(
-                      std::get<TypeRefTypeAnnotation*>(colon_ref->subject()));
-                }
-                return std::nullopt;
-              },
-              [](EnumDef*) -> std::optional<const StructDefBase*> {
-                return std::nullopt;
-              },
-              [](UseTreeEntry*) -> std::optional<const StructDefBase*> {
-                // TODO(https://github.com/google/xls/issues/352): 2025-01-23
-                // Resolve possible Struct or Proc definition through the extern
-                // UseTreeEntry.
-                return std::nullopt;
-              }},
-      def);
+  // The following is the AST we generate here:
+  // if bound < 0 { element_count<source_array_type>() + bound } else { bound }
+  XLS_ASSIGN_OR_RETURN(AstNode * bound_copy1, CloneAst(bound));
+  XLS_ASSIGN_OR_RETURN(AstNode * bound_copy2, CloneAst(bound));
+  XLS_ASSIGN_OR_RETURN(AstNode * bound_copy3, CloneAst(bound));
+  Expr* bound_less_than_zero = module.Make<Binop>(
+      bound->span(), BinopKind::kLt, down_cast<Expr*>(bound_copy1),
+      CreateS32Zero(module, bound->span()), Span::None());
+  Statement::Wrapped wrapped_add = *Statement::NodeToWrapped(module.Make<Binop>(
+      bound->span(), BinopKind::kAdd,
+      module.Make<Cast>(bound->span(),
+                        CreateElementCountInvocation(module, source_array_type),
+                        CreateS32Annotation(module, bound->span())),
+      down_cast<Expr*>(bound_copy2), Span::None()));
+  Statement::Wrapped wrapped_bound =
+      *Statement::NodeToWrapped(down_cast<Expr*>(bound_copy3));
+  return module.Make<Conditional>(
+      bound->span(), bound_less_than_zero,
+      module.Make<StatementBlock>(
+          bound->span(),
+          std::vector<Statement*>{module.Make<Statement>(wrapped_add)},
+          /*trailing_semi=*/false),
+      module.Make<StatementBlock>(
+          bound->span(),
+          std::vector<Statement*>{module.Make<Statement>(wrapped_bound)},
+          /*trailing_semi=*/false));
 }
 
 }  // namespace
 
+Number* CreateUntypedZero(Module& module, const Span& span) {
+  return module.Make<Number>(span, "0", NumberKind::kOther,
+                             /*type_annotation=*/nullptr);
+}
+
 TypeAnnotation* CreateUnOrSnAnnotation(Module& module, const Span& span,
                                        bool is_signed, int64_t bit_count) {
-  return module.Make<ArrayTypeAnnotation>(
-      span,
-      module.Make<BuiltinTypeAnnotation>(
-          span, is_signed ? BuiltinType::kSN : BuiltinType::kUN,
-          module.GetOrCreateBuiltinNameDef(is_signed ? "sN" : "uN")),
+  return CreateUnOrSnAnnotation(
+      module, span, is_signed,
       module.Make<Number>(span, absl::StrCat(bit_count), NumberKind::kOther,
                           /*type_annotation=*/nullptr));
+}
+
+TypeAnnotation* CreateUnOrSnAnnotation(Module& module, const Span& span,
+                                       bool is_signed, Expr* bit_count) {
+  return module.Make<ArrayTypeAnnotation>(
+      span, CreateUnOrSnElementAnnotation(module, span, is_signed), bit_count);
+}
+
+TypeAnnotation* CreateUnOrSnElementAnnotation(Module& module, const Span& span,
+                                              bool is_signed) {
+  return module.Make<BuiltinTypeAnnotation>(
+      span, is_signed ? BuiltinType::kSN : BuiltinType::kUN,
+      module.GetOrCreateBuiltinNameDef(is_signed ? "sN" : "uN"));
 }
 
 TypeAnnotation* CreateBoolAnnotation(Module& module, const Span& span) {
@@ -103,6 +143,11 @@ TypeAnnotation* CreateBoolAnnotation(Module& module, const Span& span) {
 TypeAnnotation* CreateU32Annotation(Module& module, const Span& span) {
   return module.Make<BuiltinTypeAnnotation>(
       span, BuiltinType::kU32, module.GetOrCreateBuiltinNameDef("u32"));
+}
+
+TypeAnnotation* CreateS32Annotation(Module& module, const Span& span) {
+  return module.Make<BuiltinTypeAnnotation>(
+      span, BuiltinType::kS32, module.GetOrCreateBuiltinNameDef("s32"));
 }
 
 TypeAnnotation* CreateStructAnnotation(
@@ -193,11 +238,12 @@ absl::StatusOr<TypeAnnotation*> CreateAnnotationSizedToFit(
           number.span(), BuiltinType::kBool,
           module.GetOrCreateBuiltinNameDef("bool"));
     case NumberKind::kOther:
-      std::pair<bool, Bits> sign_magnitude;
-      XLS_ASSIGN_OR_RETURN(sign_magnitude, GetSignAndMagnitude(number.text()));
-      const auto& [sign, magnitude] = sign_magnitude;
-      return CreateUnOrSnAnnotation(module, number.span(), sign,
-                                    magnitude.bit_count() + (sign ? 1 : 0));
+      XLS_ASSIGN_OR_RETURN((auto [sign, magnitude]),
+                           GetSignAndMagnitude(number.text()));
+      const bool is_negative = sign == Sign::kNegative;
+      return CreateUnOrSnAnnotation(
+          module, number.span(), is_negative,
+          magnitude.bit_count() + (is_negative ? 1 : 0));
   }
 }
 
@@ -238,21 +284,90 @@ const ArrayTypeAnnotation* CastToNonBitsArrayTypeAnnotation(
   return !signedness_and_bit_count.ok() ? array_annotation : nullptr;
 }
 
-std::optional<StructOrProcRef> GetStructOrProcRef(
+absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
+    const TypeAnnotation* annotation, const FileTable& file_table) {
+  const auto* type_ref_annotation =
+      dynamic_cast<const TypeRefTypeAnnotation*>(annotation);
+  if (type_ref_annotation == nullptr) {
+    return std::nullopt;
+  }
+
+  // Collect parametrics and instantiator by walking through any type
+  // aliases before getting the struct or proc definition.
+  std::vector<ExprOrType> parametrics = type_ref_annotation->parametrics();
+  std::optional<const StructInstance*> instantiator =
+      type_ref_annotation->instantiator();
+  TypeDefinition maybe_alias =
+      type_ref_annotation->type_ref()->type_definition();
+
+  while (std::holds_alternative<TypeAlias*>(maybe_alias) &&
+         dynamic_cast<TypeRefTypeAnnotation*>(
+             &std::get<TypeAlias*>(maybe_alias)->type_annotation())) {
+    type_ref_annotation = dynamic_cast<TypeRefTypeAnnotation*>(
+        &std::get<TypeAlias*>(maybe_alias)->type_annotation());
+    if (!parametrics.empty() && !type_ref_annotation->parametrics().empty()) {
+      return TypeInferenceErrorStatus(
+          annotation->span(), /* type= */ nullptr,
+          absl::StrFormat(
+              "Parametric values defined multiple times for annotation: `%s`",
+              annotation->ToString()),
+          file_table);
+    }
+
+    parametrics =
+        parametrics.empty() ? type_ref_annotation->parametrics() : parametrics;
+    instantiator = instantiator.has_value()
+                       ? instantiator
+                       : type_ref_annotation->instantiator();
+    maybe_alias = type_ref_annotation->type_ref()->type_definition();
+  }
+
+  std::optional<const StructDefBase*> def =
+      GetStructOrProcDef(type_ref_annotation);
+  if (!def.has_value()) {
+    return std::nullopt;
+  }
+  return StructOrProcRef{
+      .def = *def, .parametrics = parametrics, .instantiator = instantiator};
+}
+
+std::optional<const StructDefBase*> GetStructOrProcDef(
     const TypeAnnotation* annotation) {
   const auto* type_ref_annotation =
       dynamic_cast<const TypeRefTypeAnnotation*>(annotation);
   if (type_ref_annotation == nullptr) {
     return std::nullopt;
   }
-  std::optional<const StructDefBase*> def =
-      GetStructOrProcDef(type_ref_annotation);
-  if (!def.has_value()) {
-    return std::nullopt;
-  }
-  return StructOrProcRef{.def = *def,
-                         .parametrics = type_ref_annotation->parametrics(),
-                         .instantiator = type_ref_annotation->instantiator()};
+  const TypeDefinition& def =
+      type_ref_annotation->type_ref()->type_definition();
+  return absl::visit(
+      Visitor{[](TypeAlias* alias) -> std::optional<const StructDefBase*> {
+                return GetStructOrProcDef(&alias->type_annotation());
+              },
+              [](StructDef* struct_def) -> std::optional<const StructDefBase*> {
+                return struct_def;
+              },
+              [](ProcDef* proc_def) -> std::optional<const StructDefBase*> {
+                return proc_def;
+              },
+              [](ColonRef* colon_ref) -> std::optional<const StructDefBase*> {
+                if (std::holds_alternative<TypeRefTypeAnnotation*>(
+                        colon_ref->subject())) {
+                  return GetStructOrProcDef(
+                      std::get<TypeRefTypeAnnotation*>(colon_ref->subject()));
+                }
+                return std::nullopt;
+              },
+              [](EnumDef*) -> std::optional<const StructDefBase*> {
+                return std::nullopt;
+              },
+              [](UseTreeEntry*) -> std::optional<const StructDefBase*> {
+                // TODO(https://github.com/google/xls/issues/352): 2025-01-23
+                // Resolve possible Struct or Proc definition through the extern
+                // UseTreeEntry.
+                return std::nullopt;
+              }},
+      def);
 }
 
 absl::Status VerifyAllParametricsSatisfied(
@@ -291,6 +406,54 @@ CloneReplacer NameRefMapper(
     }
     return std::nullopt;
   };
+}
+
+Expr* CreateElementCountSum(Module& module, TypeAnnotation* lhs,
+                            TypeAnnotation* rhs) {
+  return module.Make<Binop>(
+      lhs->span(), BinopKind::kAdd, CreateElementCountInvocation(module, lhs),
+      CreateElementCountInvocation(module, rhs), Span::None());
+}
+
+absl::StatusOr<StartAndWidthExprs> CreateSliceStartAndWidthExprs(
+    Module& module, TypeAnnotation* source_array_type, const AstNode* slice) {
+  CHECK(slice->kind() == AstNodeKind::kSlice ||
+        slice->kind() == AstNodeKind::kWidthSlice);
+  if (const auto* width_slice = dynamic_cast<const WidthSlice*>(slice)) {
+    XLS_ASSIGN_OR_RETURN(
+        Expr * start,
+        ExpandSliceBoundExpr(module, source_array_type, width_slice->start(),
+                             /*start=*/true));
+    // In a width slice, the LHS is the start index and the RHS is a type
+    // annotation whose element count is the number of elements the slice is
+    // asking to extract from the source array.
+    return StartAndWidthExprs{
+        .start = start,
+        .width = CreateElementCountInvocation(module, width_slice->width())};
+  }
+  const auto* bounded_slice = dynamic_cast<const Slice*>(slice);
+  XLS_ASSIGN_OR_RETURN(
+      Expr * limit,
+      ExpandSliceBoundExpr(module, source_array_type, bounded_slice->limit(),
+                           /*start=*/false));
+  XLS_ASSIGN_OR_RETURN(
+      Expr * start,
+      ExpandSliceBoundExpr(module, source_array_type, bounded_slice->start(),
+                           /*start=*/true));
+  return StartAndWidthExprs{
+      .start = start,
+      .width = module.Make<Binop>(*slice->GetSpan(), BinopKind::kSub, limit,
+                                  start, Span::None())};
+}
+
+void FilterAnnotations(
+    std::vector<const TypeAnnotation*>& annotations,
+    absl::FunctionRef<bool(const TypeAnnotation*)> accept_predicate) {
+  annotations.erase(std::remove_if(annotations.begin(), annotations.end(),
+                                   [&](const TypeAnnotation* annotation) {
+                                     return !accept_predicate(annotation);
+                                   }),
+                    annotations.end());
 }
 
 }  // namespace xls::dslx

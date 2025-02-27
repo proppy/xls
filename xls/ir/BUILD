@@ -202,6 +202,7 @@ cc_library(
         ":bits",
         ":bits_ops",
         ":format_preference",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
@@ -241,8 +242,10 @@ cc_library(
         ":ir",
         ":ternary",
         "//xls/common:iter_util",
+        "//xls/common:iterator_range",
         "//xls/passes:ternary_evaluator",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/types:span",
     ],
@@ -289,6 +292,7 @@ cc_library(
         ":bits_ops",
         ":interval",
         "//xls/common:iterator_range",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
@@ -544,6 +548,8 @@ cc_library(
     deps = [
         ":type",
         ":value",
+        ":value_utils",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
     ],
 )
@@ -594,6 +600,7 @@ cc_library(
     ],
     deps = [
         ":bits",
+        ":change_listener",
         ":channel",
         ":channel_cc_proto",
         ":channel_ops",
@@ -615,8 +622,8 @@ cc_library(
         "//xls/common:casts",
         "//xls/common:iterator_range",
         "//xls/common:math_util",
-        "//xls/common:symbolized_stacktrace",
         "//xls/common:visitor",
+        "//xls/common/logging:log_lines",
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/data_structures:leaf_type_tree",
@@ -873,6 +880,7 @@ cc_test(
         ":ir",
         ":ir_parser",
         ":op",
+        ":register",
         ":state_element",
         ":type",
         ":value",
@@ -1647,7 +1655,6 @@ cc_library(
         ":value_utils",
         "//xls/common:casts",
         "//xls/common/status:status_macros",
-        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -1812,17 +1819,20 @@ cc_test(
 cc_test(
     name = "block_test",
     srcs = ["block_test.cc"],
+    data = glob(["testdata/block_test_*.ir"]),
     deps = [
         ":bits",
         ":channel",
         ":foreign_function_data_cc_proto",
         ":function_builder",
         ":ir",
+        ":ir_matcher",
         ":ir_test_base",
         ":register",
         ":source_location",
         ":type",
         ":value",
+        "//xls/common:golden_files",
         "//xls/common:visitor",
         "//xls/common:xls_gunit_main",
         "//xls/common/logging:log_lines",
@@ -2150,6 +2160,7 @@ cc_library(
         "//xls/common/status:ret_check",
         "//xls/common/status:status_macros",
         "//xls/passes:dce_pass",
+        "//xls/passes:optimization_pass",
         "//xls/passes:pass_base",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -2227,6 +2238,12 @@ cc_library(
     name = "op_list",
     hdrs = ["op_list.h"],
     visibility = ["//visibility:private"],
+)
+
+cc_library(
+    name = "change_listener",
+    hdrs = ["change_listener.h"],
+    deps = ["@com_google_absl//absl/types:span"],
 )
 
 proto_library(

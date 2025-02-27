@@ -43,9 +43,10 @@ class TokenSimplificationPassTest : public IrTestBase {
 
   absl::StatusOr<bool> Run(FunctionBase* f) {
     PassResults results;
+    OptimizationContext context;
     XLS_ASSIGN_OR_RETURN(bool changed,
                          TokenSimplificationPass().RunOnFunctionBase(
-                             f, OptimizationPassOptions(), &results));
+                             f, OptimizationPassOptions(), &results, &context));
     return changed;
   }
 };
@@ -62,7 +63,9 @@ TEST_F(TokenSimplificationPassTest, SingleArgument) {
   )"));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   EXPECT_THAT(Run(proc), IsOkAndHolds(true));
-  EXPECT_THAT(proc->GetNextStateElement(0), m::StateRead("tok"));
+  EXPECT_THAT(proc->next_values(proc->GetStateRead(int64_t{0})),
+              ElementsAre(m::Next(proc->GetStateRead(int64_t{0}),
+                                  m::StateRead("tok"))));
 }
 
 TEST_F(TokenSimplificationPassTest, DuplicatedArgument) {
@@ -77,7 +80,9 @@ TEST_F(TokenSimplificationPassTest, DuplicatedArgument) {
   )"));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   EXPECT_THAT(Run(proc), IsOkAndHolds(true));
-  EXPECT_THAT(proc->GetNextStateElement(0), m::StateRead("tok"));
+  EXPECT_THAT(proc->next_values(proc->GetStateRead(int64_t{0})),
+              ElementsAre(m::Next(proc->GetStateRead(int64_t{0}),
+                                  m::StateRead("tok"))));
 }
 
 TEST_F(TokenSimplificationPassTest, NestedAfterAll) {
@@ -93,7 +98,9 @@ TEST_F(TokenSimplificationPassTest, NestedAfterAll) {
   )"));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   EXPECT_THAT(Run(proc), IsOkAndHolds(true));
-  EXPECT_THAT(proc->GetNextStateElement(0), m::StateRead("tok"));
+  EXPECT_THAT(proc->next_values(proc->GetStateRead(int64_t{0})),
+              ElementsAre(m::Next(proc->GetStateRead(int64_t{0}),
+                                  m::StateRead("tok"))));
 }
 
 TEST_F(TokenSimplificationPassTest, DelayZero) {
@@ -108,7 +115,9 @@ TEST_F(TokenSimplificationPassTest, DelayZero) {
   )"));
   XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, p->GetTopAsProc());
   EXPECT_THAT(Run(proc), IsOkAndHolds(true));
-  EXPECT_THAT(proc->GetNextStateElement(0), m::StateRead("tok"));
+  EXPECT_THAT(proc->next_values(proc->GetStateRead(int64_t{0})),
+              ElementsAre(m::Next(proc->GetStateRead(int64_t{0}),
+                                  m::StateRead("tok"))));
 }
 
 TEST_F(TokenSimplificationPassTest, NestedDelay) {
@@ -157,7 +166,7 @@ TEST_F(TokenSimplificationPassTest, DuplicatedArgument2) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(tok: token, state: (), init={token, ()}) {
        literal.1: bits[32] = literal(value=10)
@@ -186,7 +195,7 @@ TEST_F(TokenSimplificationPassTest, UnrelatedArguments) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(tok: token, state: (), init={token, ()}) {
        literal.1: bits[32] = literal(value=10)
@@ -214,7 +223,7 @@ TEST_F(TokenSimplificationPassTest, ArgumentsWithDependencies) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      top proc main(tok: token, state: (), init={token, ()}) {
        literal.1: bits[32] = literal(value=10)
@@ -237,7 +246,7 @@ TEST_F(TokenSimplificationPassTest, DoNotRelyOnInvokeForDependencies) {
 
      chan test_channel(
        bits[32], id=0, kind=streaming, ops=send_only,
-       flow_control=ready_valid, metadata="""""")
+       flow_control=ready_valid)
 
      fn test_fn(tok1: token, tok2: token) -> token {
        ret tok: token = param(name=tok2)

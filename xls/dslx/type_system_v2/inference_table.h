@@ -34,8 +34,12 @@
 #include "absl/types/variant.h"
 #include "xls/common/visitor.h"
 #include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/ast_cloner.h"
 #include "xls/dslx/frontend/ast_node.h"
+#include "xls/dslx/frontend/pos.h"
+#include "xls/dslx/interp_value.h"
 #include "xls/dslx/type_system/parametric_env.h"
+#include "xls/dslx/type_system_v2/type_annotation_utils.h"
 
 namespace xls::dslx {
 
@@ -226,9 +230,13 @@ class InferenceTable {
   // Defines an inference variable fabricated by the type inference system,
   // which has no direct representation in the DSLX source code that is being
   // analyzed. It is up to the inference system using the table to decide a
-  // naming scheme for such variables.
+  // naming scheme for such variables. Optionally, if the user has provided a
+  // TypeAnnotation at declaration time, a `declaration_annotation` can be
+  // defined.
   virtual absl::StatusOr<const NameRef*> DefineInternalVariable(
-      InferenceVariableKind kind, AstNode* definer, std::string_view name) = 0;
+      InferenceVariableKind kind, AstNode* definer, std::string_view name,
+      std::optional<const TypeAnnotation*> declaration_annotation =
+          std::nullopt) = 0;
 
   // Defines an inference variable corresponding to a parametric in the DSLX
   // source code. Unlike an internal variable, a parametric has a different
@@ -318,7 +326,7 @@ class InferenceTable {
 
   // Returns whether the given `annotation` has been marked as an auto literal
   // annotation.
-  virtual bool IsAutoLiteral(const TypeAnnotation* annotation) = 0;
+  virtual bool IsAutoLiteral(const TypeAnnotation* annotation) const = 0;
 
   // Sets the target of a `ColonRef`.
   virtual void SetColonRefTarget(const ColonRef* colon_ref,
@@ -332,6 +340,11 @@ class InferenceTable {
   virtual std::optional<const NameRef*> GetTypeVariable(
       const AstNode* node) const = 0;
 
+  // Returns the type annotation declared by the user, if any, for the type
+  // variable associated with `ref`.
+  virtual absl::StatusOr<std::optional<const TypeAnnotation*>>
+  GetDeclarationTypeAnnotation(const NameRef* ref) const = 0;
+
   // Returns all type annotations that have been associated with the given
   // variable, in the order they were added to the table.
   virtual absl::StatusOr<std::vector<const TypeAnnotation*>>
@@ -339,9 +352,33 @@ class InferenceTable {
       std::optional<const ParametricContext*> parametric_context,
       const NameRef* variable) const = 0;
 
+  // Clones the given `input` subtree and the table data for each node.
+  virtual absl::StatusOr<AstNode*> Clone(const AstNode* input,
+                                         CloneReplacer replacer) = 0;
+
+  // Stores the expanded, absolute start and width expressions for a slice,
+  // which need to eventually be concretized and added to `TypeInfo`.
+  virtual absl::Status SetSliceStartAndWidthExprs(
+      const AstNode* node, StartAndWidthExprs start_and_width) = 0;
+
+  // Retrieves the previously stored start and width expressions for a slice.
+  virtual std::optional<StartAndWidthExprs> GetSliceStartAndWidthExprs(
+      const AstNode* node) = 0;
+
   // Converts the table to string for debugging purposes.
   virtual std::string ToString() const = 0;
 };
+
+// Fabricates a `Number` node and sets the given type annotation for it in the
+// inference table.
+absl::StatusOr<Number*> MakeTypeCheckedNumber(
+    Module& module, InferenceTable& table, const Span& span,
+    const InterpValue& value, const TypeAnnotation* type_annotation);
+
+// Variant that takes a raw `int64_t` value for the number.
+absl::StatusOr<Number*> MakeTypeCheckedNumber(
+    Module& module, InferenceTable& table, const Span& span, int64_t value,
+    const TypeAnnotation* type_annotation);
 
 }  // namespace xls::dslx
 

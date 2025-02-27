@@ -53,9 +53,10 @@ class ConditionalSpecializationPassTest : public IrTestBase {
     OptimizationPassOptions options;
     options.optimize_for_best_case_throughput =
         optimize_for_best_case_throughput;
+    OptimizationContext context;
     XLS_ASSIGN_OR_RETURN(
         bool changed, ConditionalSpecializationPass(use_bdd).RunOnFunctionBase(
-                          f, options, &results));
+                          f, options, &results, &context));
     return changed;
   }
   absl::StatusOr<bool> Run(Package* p, bool use_bdd = true,
@@ -64,7 +65,9 @@ class ConditionalSpecializationPassTest : public IrTestBase {
     OptimizationPassOptions options;
     options.optimize_for_best_case_throughput =
         optimize_for_best_case_throughput;
-    return ConditionalSpecializationPass(use_bdd).Run(p, options, &results);
+    OptimizationContext context;
+    return ConditionalSpecializationPass(use_bdd).Run(p, options, &results,
+                                                      &context);
   }
 };
 
@@ -963,7 +966,7 @@ TEST_F(ConditionalSpecializationPassTest, SendNoChangeLiteralPred) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xls::Package> p,
                            ParsePackageNoVerify(R"(
       package my_package
-      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="""""")
+      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
 
       top proc Delay_proc(value1: bits[32], value2: bits[32], init={1, 2}) {
         tkn: token = literal(value=token, id=1000)
@@ -981,7 +984,7 @@ TEST_F(ConditionalSpecializationPassTest, SendNoChangeUnprovable) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xls::Package> p,
                            ParsePackageNoVerify(R"(
       package my_package
-      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="""""")
+      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
 
       top proc Delay_proc(value1: bits[32], value2: bits[32], init={1, 2}) {
         tkn: token = literal(value=token, id=1000)
@@ -1001,7 +1004,7 @@ TEST_F(ConditionalSpecializationPassTest, SendChange) {
   XLS_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xls::Package> p,
                            ParsePackageNoVerify(R"(
       package my_package
-      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="""""")
+      chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
 
       top proc Delay_proc(value1: bits[32], value2: bits[32], init={1, 2}) {
         tkn: token = literal(value=token, id=1000)

@@ -52,7 +52,7 @@ xls_dslx_test(
 filegroup(
     name = "x_files",
     srcs = glob(["*.x"]),
-    visibility = ["//visibility:private"],
+    visibility = ["//xls:xls_internal"],
 )
 
 xls_dslx_library(
@@ -79,14 +79,14 @@ cc_xls_ir_jit_wrapper(
     src = ":some_caps_streaming_configured.ir",
     jit_wrapper_args = {
         "class_name": "SomeCaps",
-        "namespace": "xls::examples",
+        "namespace": "dslx::examples",
     },
     visibility = ["//xls:xls_internal"],
     wrapper_type = PROC_WRAPPER_TYPE,
 )
 
 xls_dslx_opt_ir(
-    name = "manaul_chan_caps_streaming_configured_opt_ir",
+    name = "manual_chan_caps_streaming_configured_opt_ir",
     # Note: The optimized ir has different top since the channels are used to determine proc
     # liveness instead of spawn tree. This is done to avoid having to deal with mangled names.
     dslx_top = "manual_chan_caps_specialized",
@@ -103,7 +103,7 @@ xls_dslx_opt_ir(
 
 xls_ir_verilog(
     name = "manual_chan_caps_streaming_configured_multiproc_verilog",
-    src = ":manaul_chan_caps_streaming_configured_opt_ir",
+    src = ":manual_chan_caps_streaming_configured_opt_ir",
     block_ir_file = "manual_chan_caps_streaming_configured_multiproc.block.ir",
     codegen_args = {
         "module_name": "manual_chan_caps_streaming",
@@ -132,10 +132,10 @@ xls_ir_verilog(
 
 cc_xls_ir_jit_wrapper(
     name = "some_caps_opt_jit_wrapper",
-    src = ":manaul_chan_caps_streaming_configured_opt_ir",
+    src = ":manual_chan_caps_streaming_configured_opt_ir",
     jit_wrapper_args = {
         "class_name": "SomeCapsOpt",
-        "namespace": "xls::examples",
+        "namespace": "dslx::examples",
     },
     visibility = ["//xls:xls_internal"],
     wrapper_type = PROC_WRAPPER_TYPE,

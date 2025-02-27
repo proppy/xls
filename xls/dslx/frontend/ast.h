@@ -46,6 +46,7 @@
 
 // Higher-order macro for all the Expr node leaf types (non-abstract).
 #define XLS_DSLX_EXPR_NODE_EACH(X) \
+  /* keep-sorted start */          \
   X(AllOnesMacro)                  \
   X(Array)                         \
   X(Attr)                          \
@@ -77,16 +78,19 @@
   X(VerbatimNode)                  \
   X(XlsTuple)                      \
   X(ZeroMacro)
+/* keep-sorted end */
 
 // Higher-order macro for all the AST node leaf types (non-abstract).
 //
 // (Note that this includes all the Expr node leaf kinds listed in
 // XLS_DSLX_EXPR_NODE_EACH).
 #define XLS_DSLX_AST_NODE_EACH(X) \
+  /* keep-sorted start */         \
   X(BuiltinNameDef)               \
   X(ConstantDef)                  \
   X(EnumDef)                      \
   X(Function)                     \
+  X(GenericTypeAnnotation)        \
   X(Import)                       \
   X(Impl)                         \
   X(MatchArm)                     \
@@ -112,20 +116,23 @@
   X(UseTreeEntry)                 \
   X(WidthSlice)                   \
   X(WildcardPattern)              \
+  /* keep-sorted end */           \
   /* type annotations */          \
+  /* keep-sorted start */         \
+  X(AnyTypeAnnotation)            \
   X(ArrayTypeAnnotation)          \
   X(BuiltinTypeAnnotation)        \
   X(ChannelTypeAnnotation)        \
+  X(ElementTypeAnnotation)        \
+  X(FunctionTypeAnnotation)       \
+  X(MemberTypeAnnotation)         \
+  X(ParamTypeAnnotation)          \
+  X(ReturnTypeAnnotation)         \
   X(SelfTypeAnnotation)           \
   X(TupleTypeAnnotation)          \
   X(TypeRefTypeAnnotation)        \
   X(TypeVariableTypeAnnotation)   \
-  X(MemberTypeAnnotation)         \
-  X(ElementTypeAnnotation)        \
-  X(FunctionTypeAnnotation)       \
-  X(ReturnTypeAnnotation)         \
-  X(ParamTypeAnnotation)          \
-  X(AnyTypeAnnotation)            \
+  /* keep-sorted end */           \
   XLS_DSLX_EXPR_NODE_EACH(X)
 
 namespace xls::dslx {
@@ -499,12 +506,16 @@ class MemberTypeAnnotation : public TypeAnnotation {
 // arrays and tuples. It is used internally in type inference to describe an
 // element type when the concrete rendition of the container's type is not yet
 // known. The `tuple_index` is only specified for tuple elements, since all
-// array elements are the same type.
+// array elements are the same type. By default, an `ElementTypeAnnotation` that
+// tries to destructure a bit vector, e.g. access the raw `uN` from `uN[N]`,
+// will be considered erroneous, and likely lead to a type mismatch error. The
+// `allow_bit_vector_destructuring` flag indicates that the annotation should be
+// allowed to actually do this.
 class ElementTypeAnnotation : public TypeAnnotation {
  public:
-  ElementTypeAnnotation(
-      Module* owner, const TypeAnnotation* container_type,
-      std::optional<const Number*> tuple_index = std::nullopt);
+  ElementTypeAnnotation(Module* owner, const TypeAnnotation* container_type,
+                        std::optional<const Number*> tuple_index = std::nullopt,
+                        bool allow_bit_vector_destructuring = false);
 
   absl::Status Accept(AstNodeVisitor* v) const override {
     return v->HandleElementTypeAnnotation(this);
@@ -519,6 +530,10 @@ class ElementTypeAnnotation : public TypeAnnotation {
     return tuple_index_;
   }
 
+  bool allow_bit_vector_destructuring() const {
+    return allow_bit_vector_destructuring_;
+  }
+
   std::vector<AstNode*> GetChildren(bool want_types) const override {
     return std::vector<AstNode*>{const_cast<TypeAnnotation*>(container_type_)};
   }
@@ -528,6 +543,7 @@ class ElementTypeAnnotation : public TypeAnnotation {
  private:
   const TypeAnnotation* container_type_;
   const std::optional<const Number*> tuple_index_;
+  const bool allow_bit_vector_destructuring_;
 };
 
 // Represents a function signature with a return type and parameter types. The
@@ -620,11 +636,12 @@ class ParamTypeAnnotation : public TypeAnnotation {
 };
 
 // Used internally in type inference to indicate an unknown type that is
-// replaceable in unification with any known type.
+// replaceable in unification with any known type. If `multiple` is true, it
+// represents a placeholder for more than one type.
 class AnyTypeAnnotation : public TypeAnnotation {
  public:
-  explicit AnyTypeAnnotation(Module* owner)
-      : TypeAnnotation(owner, Span::None()) {}
+  explicit AnyTypeAnnotation(Module* owner, bool multiple = false)
+      : TypeAnnotation(owner, Span::None()), multiple_(multiple) {}
 
   absl::Status Accept(AstNodeVisitor* v) const override {
     return v->HandleAnyTypeAnnotation(this);
@@ -639,6 +656,11 @@ class AnyTypeAnnotation : public TypeAnnotation {
   }
 
   std::string ToString() const override { return "Any"; };
+
+  bool multiple() const { return multiple_; }
+
+ private:
+  bool multiple_;
 };
 
 // Represents an array type annotation; e.g. `u32[5]`.
@@ -702,6 +724,31 @@ class SelfTypeAnnotation : public TypeAnnotation {
 
  private:
   bool explicit_type_;
+};
+
+// Represents the `type` in a `<T: type>` annotation.
+class GenericTypeAnnotation : public TypeAnnotation {
+ public:
+  static std::string_view GetDebugTypeName() { return "generic type"; }
+
+  GenericTypeAnnotation(Module* owner, Span span)
+      : TypeAnnotation(owner, span) {}
+
+  ~GenericTypeAnnotation() override;
+
+  absl::Status Accept(AstNodeVisitor* v) const override {
+    return v->HandleGenericTypeAnnotation(this);
+  }
+
+  std::string_view GetNodeTypeName() const override {
+    return "GenericTypeAnnotation";
+  }
+
+  std::string ToString() const override { return "type"; }
+
+  std::vector<AstNode*> GetChildren(bool want_types) const override {
+    return {};
+  }
 };
 
 // Represents the definition point of a built-in name.
@@ -1264,7 +1311,7 @@ class Number : public Expr {
   const std::string& text() const { return text_; }
 
   // Determines whether the number fits in the given `bit_count`.
-  absl::StatusOr<bool> FitsInType(int64_t bit_count) const;
+  absl::StatusOr<bool> FitsInType(int64_t bit_count, bool is_signed) const;
 
   // Turns the text for this number into a Bits object with the given bit_count.
   absl::StatusOr<Bits> GetBits(int64_t bit_count,
@@ -1707,6 +1754,10 @@ class Use : public AstNode {
   UseTreeEntry* root_;
 };
 
+// Both a `UseTreeEntry` and an `Import` are nodes that directly indicate a
+// module being imported. See e.g. `ColonRef::ResolveImportSubject`.
+using ImportSubject = std::variant<UseTreeEntry*, Import*>;
+
 // Represents a module-value or enum-value style reference when the LHS
 // expression is unknown; e.g. when accessing a member in a module:
 //
@@ -1745,7 +1796,7 @@ class ColonRef : public Expr {
   //
   // Note: if the value is not nullopt, it will be a valid pointer (not
   // nullptr).
-  std::optional<Import*> ResolveImportSubject() const;
+  std::optional<ImportSubject> ResolveImportSubject() const;
 
   Precedence GetPrecedenceWithoutParens() const final {
     return Precedence::kPaths;
@@ -1799,12 +1850,27 @@ class Param : public AstNode {
   Span span_;
 };
 
+#define XLS_DSLX_UNOP_KIND_EACH(X)                 \
+  /* one's complement inversion (bit flip) */      \
+  X(kInvert, "INVERT", "!")                        \
+  /* two's complement aritmetic negation (~x+1) */ \
+  X(kNegate, "NEGATE", "-")
+
 enum class UnopKind : uint8_t {
-  kInvert,  // one's complement inversion (bit flip)
-  kNegate,  // two's complement aritmetic negation (~x+1)
+#define FIRST_COMMA(A, ...) A,
+  XLS_DSLX_UNOP_KIND_EACH(FIRST_COMMA)
+#undef FIRST_COMMA
 };
 
-std::string UnopKindToString(UnopKind k);
+inline constexpr UnopKind kAllUnopKinds[] = {
+#define FIRST_COMMA(A, ...) UnopKind::A,
+    XLS_DSLX_UNOP_KIND_EACH(FIRST_COMMA)
+#undef FIRST_COMMA
+};
+
+// Analogous to `BinopKindFormat`, returns the string representation of the
+// given unary operation kind; e.g. "!"
+std::string UnopKindFormat(UnopKind kind);
 
 // Represents a unary operation expression; e.g. `!x`.
 class Unop : public Expr {
@@ -1875,6 +1941,12 @@ class Unop : public Expr {
 enum class BinopKind : uint8_t {
 #define FIRST_COMMA(A, ...) A,
   XLS_DSLX_BINOP_KIND_EACH(FIRST_COMMA)
+#undef FIRST_COMMA
+};
+
+inline constexpr BinopKind kAllBinopKinds[] = {
+#define FIRST_COMMA(A, ...) BinopKind::A,
+    XLS_DSLX_BINOP_KIND_EACH(FIRST_COMMA)
 #undef FIRST_COMMA
 };
 

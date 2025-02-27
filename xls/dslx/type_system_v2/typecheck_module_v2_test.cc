@@ -20,24 +20,17 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/substitute.h"
 #include "xls/common/status/matchers.h"
 #include "xls/dslx/type_system/typecheck_test_utils.h"
 #include "xls/dslx/type_system_v2/type_system_test_utils.h"
-#include "re2/re2.h"
 
 namespace xls::dslx {
 namespace {
 
 using ::absl_testing::StatusIs;
 using ::testing::AllOf;
-using ::testing::ContainsRegex;
 using ::testing::HasSubstr;
-
-absl::StatusOr<TypecheckResult> TypecheckV2(std::string_view program) {
-  return Typecheck(absl::StrCat("#![feature(type_inference_v2)]\n\n", program));
-}
 
 // Verifies that a type info string contains the given node string and type
 // string combo.
@@ -69,55 +62,6 @@ MATCHER_P(TopNodeHasType, expected, "") {
     *result_listener << "Type info: " << *type_info_string;
   }
   return matched;
-}
-
-// Verifies that a failed `TypecheckV2` status message indicates a type mismatch
-// between the given two types in string format.
-MATCHER_P2(HasTypeMismatch, type1, type2, "") {
-  return ExplainMatchResult(
-      AnyOf(ContainsRegex(absl::Substitute("type mismatch.*$0.* vs. $1",
-                                           RE2::QuoteMeta(type1),
-                                           RE2::QuoteMeta(type2))),
-            ContainsRegex(absl::Substitute("type mismatch.*$1.* vs. $0",
-                                           RE2::QuoteMeta(type1),
-                                           RE2::QuoteMeta(type2)))),
-      arg, result_listener);
-}
-
-// Verifies that a failed `TypecheckV2` status message indicates a size mismatch
-// between the given two types in string format.
-MATCHER_P2(HasSizeMismatch, type1, type2, "") {
-  return ExplainMatchResult(
-      AnyOf(ContainsRegex(absl::Substitute("size mismatch.*$0.* vs. $1",
-                                           RE2::QuoteMeta(type1),
-                                           RE2::QuoteMeta(type2))),
-            ContainsRegex(absl::Substitute("size mismatch.*$1.* vs. $0",
-                                           RE2::QuoteMeta(type1),
-                                           RE2::QuoteMeta(type2)))),
-      arg, result_listener);
-}
-
-// Verifies that a failed `TypecheckV2` status message indicates a cast error
-// between the given two types in string format.
-MATCHER_P2(HasCastError, from_type, to_type, "") {
-  return ExplainMatchResult(
-      ContainsRegex(absl::Substitute("Cannot cast from type `$0` to type `$1`",
-                                     RE2::QuoteMeta(from_type),
-                                     RE2::QuoteMeta(to_type))),
-      arg, result_listener);
-}
-
-// Verifies that a failed `TypecheckV2` status message indicates a signedness
-// mismatch between the given two types in string format.
-MATCHER_P2(HasSignednessMismatch, type1, type2, "") {
-  return ExplainMatchResult(
-      AnyOf(ContainsRegex(
-                absl::Substitute("signed vs. unsigned mismatch.*$0.* vs. $1",
-                                 RE2::QuoteMeta(type1), RE2::QuoteMeta(type2))),
-            ContainsRegex(absl::Substitute(
-                "signed vs. unsigned mismatch.*$1.* vs. $0",
-                RE2::QuoteMeta(type1), RE2::QuoteMeta(type2)))),
-      arg, result_listener);
 }
 
 // Verifies that the `TypecheckV2` output contains a one-line statement block
@@ -383,6 +327,114 @@ const Z = X % 1 % Y % 2;
                   HasNodeWithType("const X = u32:3;", "uN[32]"),
                   HasNodeWithType("const Y: u32 = 4;", "uN[32]"),
                   HasNodeWithType("const Z = X % 1 % Y % 2;", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, ConcatOfBitsLiterals) {
+  EXPECT_THAT("const X = u8:3 ++ u1:1;", TopNodeHasType("uN[9]"));
+}
+
+TEST(TypecheckV2Test, ConcatWithSignedBitsLhsFails) {
+  EXPECT_THAT(
+      "const X = s8:3 ++ u1:1;",
+      TypecheckFails(HasSubstr(
+          "Concatenation requires operand types to both be unsigned bits")));
+}
+
+TEST(TypecheckV2Test, ConcatWithSignedBitsRhsFails) {
+  EXPECT_THAT(
+      "const X = u8:3 ++ s1:-1;",
+      TypecheckFails(HasSubstr(
+          "Concatenation requires operand types to both be unsigned bits")));
+}
+
+TEST(TypecheckV2Test, ConcatWithArrayAndNonArrayFails) {
+  EXPECT_THAT(
+      "const X = [u8:3] ++ u8:1;",
+      TypecheckFails(HasSubstr(
+          "Attempting to concatenate array/non-array values together")));
+}
+
+TEST(TypecheckV2Test, ConcatWithDifferentArrayElementTypesFails) {
+  EXPECT_THAT("const X = [u8:3] ++ [u16:1];",
+              TypecheckFails(HasTypeMismatch("uN[8]", "uN[16]")));
+}
+
+TEST(TypecheckV2Test, ConcatWithBitsAndStructFails) {
+  EXPECT_THAT(
+      R"(
+struct Foo { x: u8 }
+const X = Foo{ x: u8:1 } ++ u8:1;
+)",
+      TypecheckFails(HasSubstr("Concatenation requires operand types to be "
+                               "either both-arrays or both-bits")));
+}
+
+TEST(TypecheckV2Test, ConcatOfArrayLiterals) {
+  EXPECT_THAT("const X = [u32:1, 2, 3] ++ [u32:1, 2, 3];",
+              TopNodeHasType("uN[32][6]"));
+}
+
+TEST(TypecheckV2Test, IndexOfArrayConcat) {
+  EXPECT_THAT("const X = ([u32:1, 2, 3] ++ [u32:1, 2])[1];",
+              TopNodeHasType("uN[32]"));
+}
+
+TEST(TypecheckV2Test, ConcatOfBitsConstants) {
+  EXPECT_THAT(R"(
+const A = u20:0;
+const B = u30:0;
+const X = A ++ B;
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[50]")));
+}
+
+TEST(TypecheckV2Test, ConcatOfArrayConstants) {
+  EXPECT_THAT(R"(
+const A = [u32:0, 1, 2];
+const B = [u32:200, 300];
+const X = A ++ B;
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[32][5]")));
+}
+
+TEST(TypecheckV2Test, ConcatOfBitsParametricFunctionArgs) {
+  EXPECT_THAT(R"(
+fn f<A: u32, B: u32>(a: uN[A], b: uN[B]) -> uN[A + B] {
+  a ++ b
+}
+const X = f(u16:0, u32:0);
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[48]")));
+}
+
+TEST(TypecheckV2Test, ConcatOfArrayParametricFunctionArgs) {
+  EXPECT_THAT(R"(
+fn f<A: u32, B: u32>(a: u32[A], b: u32[B]) -> u32[A + B] {
+  a ++ b
+}
+const X = f([u32:1, 2, 3], [u32:200]);
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[32][4]")));
+}
+
+TEST(TypecheckV2Test, ConcatOfBitsAsImplicitParametric) {
+  EXPECT_THAT(R"(
+fn f<A: u32>(a: uN[A]) -> uN[A] { a }
+const X = f(u16:0 ++ u32:0);
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[48]")));
+}
+
+TEST(TypecheckV2Test, ConcatOfArrayAsImplicitParametric) {
+  EXPECT_THAT(R"(
+fn f<A: u32>(a: u16[A]) -> u16[A] { a }
+const X = f([u16:0, 1, 2] ++ [u16:20]);
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[16][4]")));
+}
+
+TEST(TypecheckV2Test, SumOfConcatsOfBits) {
+  EXPECT_THAT("const X = (u16:0 ++ u32:0) + u48:10;", TopNodeHasType("uN[48]"));
 }
 
 TEST(TypecheckV2Test, GlobalBoolConstantEqualsComparisonOfUntypedLiterals) {
@@ -654,6 +706,36 @@ TEST(TypecheckV2Test, GlobalArrayConstantWithAnnotatedIntegerLiterals) {
                                       HasNodeWithType("u32:2", "uN[32]"))));
 }
 
+TEST(TypecheckV2Test, ArrayWithArrayAnnotation) {
+  EXPECT_THAT("const X = u32[2]:[1, 2];",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[32][2]")));
+}
+
+TEST(TypecheckV2Test, ArrayWithArrayAnnotationWithSignednessMismatchFails) {
+  EXPECT_THAT("const X = u32[2]:[-1, 2];",
+              TypecheckFails(HasSignednessMismatch("u32", "sN[3]")));
+}
+
+TEST(TypecheckV2Test, ArrayWithArrayAnnotationWithSizeMismatchFails) {
+  EXPECT_THAT("const X = u8[2]:[1, 65536];",
+              TypecheckFails(HasSizeMismatch("u8", "uN[17]")));
+}
+
+TEST(TypecheckV2Test, ArrayWithArrayAnnotationWithCountMismatchFails) {
+  EXPECT_THAT("const X = u8[2]:[u8:1, 2, 3];",
+              TypecheckFails(HasTypeMismatch("u8[2]", "uN[8][3]")));
+}
+
+TEST(TypecheckV2Test, AnnotatedEmptyArray) {
+  EXPECT_THAT("const X = u8[0]:[];",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[8][0]")));
+}
+
+TEST(TypecheckV2Test, AnnotatedEmptyArrayMismatchFails) {
+  EXPECT_THAT("const X = u8[1]:[];",
+              TypecheckFails(HasTypeMismatch("u8[0]", "u8[1]")));
+}
+
 TEST(TypecheckV2Test, GlobalConstantEqualsIndexOfTemporaryArray) {
   EXPECT_THAT("const X = [u32:1, u32:2][0];",
               TypecheckSucceeds(HasNodeWithType("X", "uN[32]")));
@@ -785,6 +867,47 @@ const X = s31:1;
 const Y = uN[X]:1;
 )",
       TypecheckFails(HasSizeMismatch("s31", "u32")));
+}
+
+TEST(TypecheckV2Test, ArrayOfTuples) {
+  EXPECT_THAT(
+      R"(
+fn tuple_fn() -> u32 {
+   let x = [(1, 2, 3), (3, 4, 5), (5, 6, 7), (7, 8, 9)];
+   x[0].1
+}
+)",
+      TypecheckSucceeds(HasNodeWithType("x", "(uN[3], uN[4], uN[4])[4]")));
+}
+
+TEST(TypecheckV2Test, NestedTuples) {
+  EXPECT_THAT(
+      R"(
+const X = (((0, 1, 2, 3), 4, (5, 6, 7), 8), (9, (10, 11, 12)), 13);
+)",
+      TypecheckSucceeds(HasNodeWithType(
+          "X",
+          "(((uN[0], uN[1], uN[2], uN[2]), uN[3], (uN[3], uN[3], uN[3]), "
+          "uN[4]), (uN[4], (uN[4], uN[4], uN[4])), uN[4])")));
+}
+
+TEST(TypecheckV2Test, NestedArraysAndTuples) {
+  EXPECT_THAT(
+      R"(
+const X = (((0, 1, 2, 3), 4, [5, 6, 7], 8), (9, (10, [11, 12])), 13);
+)",
+      TypecheckSucceeds(
+          HasNodeWithType("X",
+                          "(((uN[0], uN[1], uN[2], uN[2]), uN[3], uN[3][3], "
+                          "uN[4]), (uN[4], (uN[4], uN[4][2])), uN[4])")));
+}
+
+TEST(TypecheckV2Test, NestedArrays) {
+  EXPECT_THAT(
+      R"(
+const X = [[[0, 1, 2], [2, 3, 4], [4, 5, 6]], [[6, 7, 8], [8, 9, 10], [10, 11, 12]]];
+)",
+      TypecheckSucceeds(HasNodeWithType("X", "uN[4][3][3][2]")));
 }
 
 TEST(TypecheckV2Test, XnAnnotationWithNonBoolLiteralSignednessFails) {
@@ -1948,6 +2071,16 @@ const Y = foo<17>();
                         HasNodeWithType("const Y = foo<17>();", "uN[17]"))));
 }
 
+TEST(TypecheckV2Test, ParametricFunctionReturningIntegerOfNPlus1Size) {
+  EXPECT_THAT(R"(
+fn foo<N: u32>(a: uN[N + 1]) -> uN[N + 1] { a }
+const X = foo<16>(1);
+const Y = foo<17>(2);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[17]"),
+                                      HasNodeWithType("Y", "uN[18]"))));
+}
+
 TEST(TypecheckV2Test, ParametricFunctionReturningIntegerOfParameterSignedness) {
   EXPECT_THAT(R"(
 fn foo<S: bool>() -> xN[S][32] { 5 }
@@ -1969,6 +2102,30 @@ const Y = foo<true, 11>();
               TypecheckSucceeds(AllOf(
                   HasNodeWithType("const X = foo<false, 10>();", "uN[10]"),
                   HasNodeWithType("const Y = foo<true, 11>();", "sN[11]"))));
+}
+
+TEST(TypecheckV2Test, ParametricFunctionReturningIntegerOfCastedDifference) {
+  EXPECT_THAT(R"(
+fn f<A: s32, B: s32>(a: u32) -> uN[(B - A) as u32] {
+   a as uN[(B - A) as u32]
+}
+const X = f<1, 3>(50);
+const Y = f<1, 4>(50);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[2]"),
+                                      HasNodeWithType("Y", "uN[3]"))));
+}
+
+TEST(TypecheckV2Test, FunctionReturningIntegerOfSumOfInferredParametrics) {
+  EXPECT_THAT(R"(
+fn f<A: u32, B: u32>(a: uN[A], b: uN[B]) -> uN[A + B] {
+   a as uN[A + B] + b as uN[A + B]
+}
+const X = f(u16:30, u8:40);
+const Y = f(u32:30, u40:40);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[24]"),
+                                      HasNodeWithType("Y", "uN[72]"))));
 }
 
 TEST(TypecheckV2Test, ParametricFunctionTakingIntegerOfParameterizedSize) {
@@ -2789,6 +2946,230 @@ const Z:u31 = match X {
               TypecheckFails(HasSizeMismatch("u32", "u31")));
 }
 
+TEST(TypecheckV2Test, PatternMatch) {
+  EXPECT_THAT(R"(
+fn f(t: (u8, u32)) -> u32 {
+    match t {
+        (42, y) => y,
+        (_, y) => y + 1,
+    }
+}
+
+fn main() {
+    const VAL = f((42, 10));
+    let res = uN[VAL]:0;
+
+    let val2 = f((3, 10));
+    let res2 = uN[val2]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("res2", "uN[11]"),
+                                      HasNodeWithType("y", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithRestOfTuple) {
+  EXPECT_THAT(R"(
+fn f(t: (u8, u32, u32, u32)) -> u32 {
+    match t {
+        (42, .., y) => y,
+        (_, .., y) => y + 1,
+    }
+}
+fn main() {
+    const VAL = f((42, 0, 0, 10));
+    let res = uN[VAL]:0;
+
+    let val2 = f((3, 0, 0,10));
+    let res2 = uN[val2]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("res2", "uN[11]"),
+                                      HasNodeWithType("y", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithRestOfTupleIsOne) {
+  EXPECT_THAT(R"(
+fn f(t: (u8, u32, u32)) -> u32 {
+    match t {
+        (42, .., y) => y,
+        (_, .., y) => y + 1,
+    }
+}
+fn main() {
+    const VAL = f((42, 0, 10));
+    let res = uN[VAL]:0;
+
+    let val2 = f((3, 0, 10));
+    let res2 = uN[val2]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("res2", "uN[11]"),
+                                      HasNodeWithType("y", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithRestOfTupleIsNone) {
+  EXPECT_THAT(R"(
+fn f(t: (u8, u32)) -> u32 {
+    match t {
+        (42, .., y) => y,
+        (_, .., y) => y + 1,
+    }
+}
+fn main() {
+    const VAL = f((42, 10));
+    let res = uN[VAL]:0;
+
+    let val2 = f((3, 10));
+    let res2 = uN[val2]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("res2", "uN[11]"),
+                                      HasNodeWithType("y", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchToConstant) {
+  EXPECT_THAT(R"(
+const MY_FAVORITE_NUMBER = u8:42;
+
+fn f(t: (u8, u32)) -> u32 {
+    match t {
+        (MY_FAVORITE_NUMBER, y) => y,
+        (_, y) => y + 77,
+    }
+}
+
+fn main() {
+    const VAL = f((42, 10));
+    let res = uN[VAL]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("y", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchNested) {
+  EXPECT_THAT(R"(
+const MY_FAVORITE_NUMBER = u8:42;
+
+fn f(t: (u8, (u16, u32))) -> u32 {
+    match t {
+        (MY_FAVORITE_NUMBER, (y, z)) => y as u32 + z,
+        (_, (y, 42)) => y as u32,
+        _ => 7,
+    }
+}
+
+fn main() {
+    const VAL = f((42, (10, 10))); // Returns 20
+    let res = uN[VAL]:0;
+
+    const VAL2 = f((40, (10, MY_FAVORITE_NUMBER as u32))); // Returns 10
+    let res2 = uN[VAL2]:0;
+
+    const VAL3 = f((40, (10, 0))); // Returns 7
+    let res3 = uN[VAL3]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[20]"),
+                                      HasNodeWithType("res2", "uN[10]"),
+                                      HasNodeWithType("res3", "uN[7]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithRange) {
+  EXPECT_THAT(R"(
+fn f(x: u32) -> u32 {
+    match x {
+        1..3 => u32:1,
+        _ => x,
+    }
+}
+
+fn main() {
+    let n = f(2);
+    let res = uN[n]:0;
+
+    let m = f(u32:6);
+    let res2 = uN[m]:0;
+
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[1]"),
+                                      HasNodeWithType("res2", "uN[6]"),
+                                      HasNodeWithType("1..3", "uN[32]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithConditional) {
+  EXPECT_THAT(R"(
+fn f(x: u2) -> u32 {
+    match x {
+        0..1 | 3 => 42,
+        _ => 10,
+    }
+}
+
+fn main() {
+    let n = f(u2:3);
+    let res = uN[n]:0;
+
+    let m = f(u2:2);
+    let res2 = uN[m]:0;
+
+    let o = f(u2:0);
+    let res3 = uN[o]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[42]"),
+                                      HasNodeWithType("res2", "uN[10]"),
+                                      HasNodeWithType("res3", "uN[42]"))));
+}
+
+TEST(TypecheckV2Test, PatternMatchWithParametric) {
+  EXPECT_THAT(R"(
+fn f<N: u8>(t: (u8, u32)) -> u32 {
+    match t {
+        (N, y) => y,
+        (_, y) => y + 1,
+    }
+}
+
+fn main() {
+    const VAL = f<u8:2>((2, 10));
+    let res = uN[VAL]:0;
+
+    let val2 = f<u8:2>((3, 10));
+    let res2 = uN[val2]:0;
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("res", "uN[10]"),
+                                      HasNodeWithType("res2", "uN[11]"))));
+}
+
+TEST(TypecheckV2Test, PatternMismatch) {
+  EXPECT_THAT(R"(fn f(t: (u8, u32)) -> u32 {
+    match t {
+        (u3:42, y) => y,
+        (_, y) => y + 1,
+    }
+}
+)",
+              TypecheckFails(HasSizeMismatch("uN[3]", "u8")));
+}
+
+TEST(TypecheckV2Test, PatternMatcherWrongType) {
+  EXPECT_THAT(R"(fn f(t: (u8, u32)) -> u32 {
+    match t {
+        42 => 0,
+        y => y + 1,
+    }
+}
+)",
+              TypecheckFails(HasTypeMismatch("(u8, u32)", "uN[6]")));
+}
+
 TEST(TypecheckV2Test, ZeroMacroNumber) {
   EXPECT_THAT("const Y = zero!<u10>();",
               TypecheckSucceeds(HasNodeWithType("Y", "uN[10]")));
@@ -2861,7 +3242,7 @@ TEST(TypecheckV2Test, ZeroMacroExprError) {
 const X = u32:10;
 const Y = zero!<X>();
 )",
-              TypecheckFails(HasSubstr("in ZeroMacro type")));
+              TypecheckFails(HasSubstr("in `zero!<X>()`")));
 }
 
 TEST(TypecheckV2Test, ZeroMacroImplConstError) {
@@ -2870,7 +3251,7 @@ struct S{}
 impl S { const X = u32:10; }
 const Y = zero!<S::X>();
 )",
-              TypecheckFails(HasSubstr("in ZeroMacro type")));
+              TypecheckFails(HasSubstr("in `zero!<S::X>()`")));
 }
 
 // We don't support imports in the type system yet.
@@ -3025,7 +3406,7 @@ TEST(TypecheckV2Test, AllOnesMacroExprError) {
 const X = u32:10;
 const Y = all_ones!<X>();
 )",
-              TypecheckFails(HasSubstr("in AllOnesMacro type")));
+              TypecheckFails(HasSubstr("in `all_ones!<X>()`")));
 }
 
 TEST(TypecheckV2Test, AllOnesMacroImplConstError) {
@@ -3034,7 +3415,7 @@ struct S{}
 impl S { const X = u32:10; }
 const Y = all_ones!<S::X>();
 )",
-              TypecheckFails(HasSubstr("in AllOnesMacro type")));
+              TypecheckFails(HasSubstr("in `all_ones!<S::X>()`")));
 }
 
 // We don't support imports in the type system yet.
@@ -3349,6 +3730,22 @@ fn main() {
 )",
               TypecheckSucceeds(AllOf(HasNodeWithType("C", "uN[16]"),
                                       HasNodeWithType("z", "uN[4]"))));
+}
+
+TEST(TypecheckV2Test, LetWithRestOfTupleInParametricFn) {
+  EXPECT_THAT(R"(
+fn f<N: u32, M: u32 = {N * 2}>(x: uN[N]) -> (uN[N], uN[M]) {
+  let (y,.., z) = (x + uN[N]:1, u15:0, u6:7, uN[M]:3);
+  (y, z)
+}
+
+fn main() {
+  let (c, _) = f<16>(uN[16]:5);
+  let (_, z) = f<4>(uN[4]:0);
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("c", "uN[16]"),
+                                      HasNodeWithType("z", "uN[8]"))));
 }
 
 TEST(TypecheckV2Test, BadTupleAnnotation) {
@@ -4281,6 +4678,523 @@ const Y = Data{a: 120}.foo(256);
 )",
       TypecheckSucceeds(AllOf(HasNodeWithType("X", "(uN[3], uN[6], uN[16])"),
                               HasNodeWithType("Y", "(uN[7], uN[9], uN[16])"))));
+}
+
+TEST(TypecheckV2BuiltinTest, AndReduce) {
+  EXPECT_THAT("const Y = and_reduce(u6:3);",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[1]")));
+}
+
+TEST(TypecheckV2BuiltinTest, AssertLt) {
+  EXPECT_THAT(
+      R"(
+fn foo(x: u10) -> u10 {
+  assert_lt(x, 25);
+  x
+}
+
+const X = foo(10);
+)",
+      TypecheckSucceeds(HasNodeWithType("25", "uN[10]")));
+}
+
+TEST(TypecheckV2BuiltinTest, AssertWithArray) {
+  EXPECT_THAT(
+      R"(
+fn foo(x:u32) -> u32 {
+  assert!(x>32, [1,2,3]);
+  x
+}
+
+const X = foo(10);
+)",
+      TypecheckSucceeds(HasNodeWithType("[1, 2, 3]", "uN[8][3]")));
+}
+
+TEST(TypecheckV2BuiltinTest, DISABLED_Assert) {
+  // TiV2 can't deal with strings yet.
+  EXPECT_THAT(
+      R"(
+fn foo(x:u32) -> u32 {
+  assert!(x>32, "Failed");
+  x
+}
+
+const X = foo(10);
+)",
+      TypecheckSucceeds(HasNodeWithType("X", "uN[32]")));
+}
+
+TEST(TypecheckV2BuiltinTest, BitSliceUpdate) {
+  EXPECT_THAT(R"(const Y = bit_slice_update(u32:10, u33:11, u34:12);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[32]")));
+}
+
+TEST(TypecheckV2BuiltinTest, BitSliceUpdateError) {
+  EXPECT_THAT(R"(const Y: u64 = bit_slice_update(u32:10, u33:11, u34:12);)",
+              TypecheckFails(HasSizeMismatch("uN[32]", "u64")));
+}
+
+TEST(TypecheckV2BuiltinTest, Clz) {
+  EXPECT_THAT(R"(const Y = clz(u8:3);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[8]")));
+}
+
+TEST(TypecheckV2BuiltinTest, Ctz) {
+  EXPECT_THAT(R"(const Y = ctz(u8:3);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[8]")));
+}
+
+TEST(TypecheckV2BuiltinTest, DISABLED_OneHot) {
+  // This doesn't work yet. It gives an error in GenerateTypeInfo,
+  // probably because it needs the parametric environment in context of the main
+  // module at the invocation site at the same time it needs the function
+  // signature from the builtins module.
+  EXPECT_THAT(R"(const Y = one_hot(u32:2, true);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[33]")));
+}
+
+TEST(TypecheckV2BuiltinTest, MyOneHot) {
+  EXPECT_THAT(R"(
+fn my_one_hot<N: u32, M:u32={N+1}>(x: uN[N], y: u1) -> uN[M] {
+  zero!<uN[M]>()
+}
+
+const Y = my_one_hot(u32:2, true);
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[33]")));
+}
+
+TEST(TypecheckV2BuiltinTest, OneHotSel) {
+  EXPECT_THAT(R"(const Y = one_hot_sel(2, [s10:1, s10:2]);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "sN[10]")));
+}
+
+TEST(TypecheckV2BuiltinTest, OrReduce) {
+  EXPECT_THAT(R"(const Y = or_reduce(u6:3);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[1]")));
+}
+
+TEST(TypecheckV2BuiltinTest, OrReduceError) {
+  EXPECT_THAT(R"(const Y: u32 = or_reduce(u6:3);)",
+              TypecheckFails(HasSizeMismatch("u1", "u32")));
+}
+
+TEST(TypecheckV2BuiltinTest, PrioritySel) {
+  EXPECT_THAT(R"(const Y = priority_sel(2, [s10:1, s10:2], s10:3);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "sN[10]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevWithParametric) {
+  EXPECT_THAT(R"(const Y = rev<u32:8>(u8:3);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[8]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevWithParametricMismatch) {
+  EXPECT_THAT(R"(const Y = rev<u32:8>(u6:3);)",
+              TypecheckFails(HasSizeMismatch("uN[8]", "u6")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevMismatch) {
+  EXPECT_THAT(R"(const Y:u32 = rev(u6:3);)",
+              TypecheckFails(HasSizeMismatch("u32", "uN[6]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevWithoutParametric) {
+  EXPECT_THAT(R"(
+const X = rev(u32:3);
+const Y = rev(u8:3);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[32]"),
+                                      HasNodeWithType("Y", "uN[8]"))));
+}
+
+TEST(TypecheckV2BuiltinTest, RevWithArithmetic) {
+  EXPECT_THAT(R"(
+const Y = rev(u8:3);
+const Z = rev(Y) + 1;
+)",
+              TypecheckSucceeds(HasNodeWithType("rev(Y) + 1", "uN[8]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevIndex) {
+  EXPECT_THAT(R"(
+const X:uN[32][4] = [1,2,3,4];
+const Y = X[rev(u32:0)];
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[32][4]"),
+                                      HasNodeWithType("Y", "uN[32]"))));
+}
+
+TEST(TypecheckV2BuiltinTest, RevArraySizeMismatch) {
+  EXPECT_THAT(R"(const X:uN[rev(u2:1)][4] = [1,2,1,2];)",
+              TypecheckFails(HasSizeMismatch("u32", "uN[2]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevArraySizeOK) {
+  EXPECT_THAT(R"(
+  // Should reverse to u32:2
+const X:uN[rev(u32:0b1000000000000000000000000000000)][4] = [1,2,1,2];
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[2][4]")));
+}
+
+TEST(TypecheckV2BuiltinTest, RevTwiceArraySizeOK) {
+  EXPECT_THAT(R"(
+const X:uN[rev(rev(u32:2))][4] = [1,2,1,2];
+)",
+              TypecheckSucceeds(HasNodeWithType("X", "uN[2][4]")));
+}
+
+TEST(TypecheckV2BuiltinTest, SignEx) {
+  EXPECT_THAT(R"(
+const X = signex(s16:10, s16:0);
+const Y = signex(u16:10, s32:0);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "sN[16]"),
+                                      HasNodeWithType("Y", "sN[32]"))));
+}
+
+TEST(TypecheckV2BuiltinTest, Smulp) {
+  EXPECT_THAT(R"(const Y = smulp(s16:10, s16:20);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "(sN[16], sN[16])")));
+}
+
+TEST(TypecheckV2BuiltinTest, Umulp) {
+  EXPECT_THAT(R"(const Y = umulp(u16:10, u16:20);)",
+              TypecheckSucceeds(HasNodeWithType("Y", "(uN[16], uN[16])")));
+}
+
+TEST(TypecheckV2Test, TypeAliasSelfReference) {
+  EXPECT_THAT(
+      "type T=uN[T::A as u2];",
+      TypecheckFails(HasSubstr("Cannot find a definition for name: \"T\"")));
+}
+
+TEST(TypecheckV2Test, CastToXbitsBasedBoolArray) {
+  EXPECT_THAT(R"(
+const ARRAY_SIZE = u32:44;
+type MyXn = xN[bool:0x0][1];  // equivalent to a bool
+
+fn main() -> bool[44] {
+  let x: u44 = 0;
+  // Equivalent to casting bits to corresponding bool array.
+  x as MyXn[ARRAY_SIZE]
+}
+
+fn f() {
+  let n = main();
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("x", "uN[44]"),
+                                      HasNodeWithType("n", "uN[1][44]"))));
+}
+
+TEST(TypecheckV2Test, TypeAlias) {
+  EXPECT_THAT(R"(
+type MyTypeAlias = (u32, u8);
+fn id(x: MyTypeAlias) -> MyTypeAlias { x }
+fn f() -> MyTypeAlias { id((42, 127)) }
+)",
+              TypecheckSucceeds(AllOf(
+                  HasNodeWithType("x", "(uN[32], uN[8])"),
+                  HasNodeWithType("id", "((uN[32], uN[8])) -> (uN[32], uN[8])"),
+                  HasNodeWithType("f", "() -> (uN[32], uN[8])"))));
+}
+
+TEST(TypecheckV2Test, TypeAliasInParametricFn) {
+  EXPECT_THAT(R"(
+fn f<T: u32>() -> uN[T] {
+  type Ret = uN[T];
+  Ret:0
+}
+
+fn main() {
+  let x = f<8>();
+  let y = f<15>();
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("x", "uN[8]"),
+                                      HasNodeWithType("y", "uN[15]"))));
+}
+
+TEST(TypecheckV2Test, TypeAliasOnStructInParametricFn) {
+  EXPECT_THAT(R"(
+struct S<X: u32> {
+  x: bits[X],
+}
+
+fn f<T: u32>() -> uN[T] {
+  type MyS = S<T>;
+  MyS { x: 1 }.x
+}
+
+fn main() {
+  let x = f<8>();
+  let y = f<15>();
+}
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("x", "uN[8]"),
+                                      HasNodeWithType("y", "uN[15]"))));
+}
+
+TEST(TypecheckV2Test, TypeAliasInGlobalConstant) {
+  EXPECT_THAT(
+      R"(
+type MyTypeAlias = (u32, u8);
+const MY_TUPLE : MyTypeAlias = (u32:42, u8:127);
+)",
+      TypecheckSucceeds(HasNodeWithType("MY_TUPLE", "(uN[32], uN[8])")));
+}
+
+TEST(TypecheckV2Test, TypeAliasInLet) {
+  EXPECT_THAT(
+      R"(
+type MyTypeAlias = (u32, u8);
+fn f() -> u8 {
+  let some_val: MyTypeAlias = (5, 10);
+  some_val.1
+}
+)",
+      TypecheckSucceeds(HasNodeWithType("some_val", "(uN[32], uN[8])")));
+}
+
+TEST(TypecheckV2Test, TypeAliasCircularReference) {
+  EXPECT_THAT(R"(
+type MyTypeAlias = AnotherAlias;
+type AnotherAlias = MyTypeAlias;
+
+fn id(x: AnotherAlias) -> AnotherAlias { x }
+fn f() -> AnotherAlias { id((42, 127)) }
+)",
+              TypecheckFails(HasSubstr(
+                  "Cannot find a definition for name: \"AnotherAlias\"")));
+}
+
+TEST(TypecheckV2Test, TypeAliasMultipleLevels) {
+  EXPECT_THAT(R"(
+type MyTypeAlias = (u32, u8);
+type AnotherAlias = MyTypeAlias;
+
+fn id(x: AnotherAlias) -> AnotherAlias { x }
+fn f() -> AnotherAlias { id((42, 127)) }
+)",
+              TypecheckSucceeds(AllOf(
+                  HasNodeWithType("x", "(uN[32], uN[8])"),
+                  HasNodeWithType("id", "((uN[32], uN[8])) -> (uN[32], uN[8])"),
+                  HasNodeWithType("f", "() -> (uN[32], uN[8])"))));
+}
+
+// ColonRefs not fully supported yet.
+TEST(TypecheckV2Test, DISABLED_ColonRefTypeAlias) {
+  EXPECT_THAT(
+      R"(
+type MyU8 = u8;
+fn f() -> u8 { MyU8::MAX }
+fn g() -> u8 { MyU8::ZERO }
+fn h() -> u8 { MyU8::MIN }
+)",
+      TypecheckSucceeds(AllOf(
+          HasNodeWithType("MyU8", "u8"), HasNodeWithType("f", "() -> u8"),
+          HasNodeWithType("g", "() -> u8"), HasNodeWithType("MyU8", "u8"))));
+}
+
+TEST(TypecheckV2Test, TypeAliasOfStructWithBoundParametrics) {
+  EXPECT_THAT(R"(
+struct S<X: u32, Y: u32> {
+  x: bits[X],
+  y: bits[Y],
+}
+type MyS = S<3, 4>;
+fn f() -> MyS { MyS {x: 3, y: 4 } }
+)",
+              TypecheckSucceeds(
+                  AllOf(HasNodeWithType("f", "() -> S { x: uN[3], y: uN[4] }"),
+                        HasNodeWithType("MyS", "S { x: uN[3], y: uN[4] }"))));
+}
+
+TEST(TypecheckV2Test, ParametricValuesDefinedMultipleTimesInTypeAlias) {
+  EXPECT_THAT(R"(
+struct S<X: u32, Y: u32 = {X * 2}> {
+  x: bits[X],
+  y: bits[Y],
+}
+type MyS = S<3>;
+type MySDouble = MyS<4>;
+fn f() -> uN[4] {
+  let x = MySDouble { x: 3, y: 4 };
+  x.y
+}
+)",
+              TypecheckFails(HasSubstr("Parametric values defined multiple "
+                                       "times for annotation: `MyS<4>`")));
+}
+
+TEST(TypecheckV2Test, ElementInTypeAliasOfStructWithBoundParametrics) {
+  EXPECT_THAT(R"(
+struct S<X: u32, Y: u32> {
+  x: bits[X],
+  y: bits[Y],
+}
+type MyS = S<3, 4>;
+fn f() -> uN[3] {
+  let x = MyS { x: 1, y: 1 };
+  x.x
+}
+)",
+              TypecheckSucceeds(
+                  AllOf(HasNodeWithType("f", "() -> uN[3]"),
+                        HasNodeWithType("MyS", "S { x: uN[3], y: uN[4] }"),
+                        HasNodeWithType("x", "S { x: uN[3], y: uN[4] }"))));
+}
+
+TEST(TypecheckV2Test, SliceOfBitsLiteral) {
+  EXPECT_THAT("const X = 0b100111[0:2];", TopNodeHasType("uN[2]"));
+}
+
+TEST(TypecheckV2Test, SliceOfBitsConstant) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[0:2];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[2]")));
+}
+
+TEST(TypecheckV2Test, SliceWithOneNegativeAndOnePositiveIndex) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[-2:6];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[2]")));
+}
+
+TEST(TypecheckV2Test, SliceWithBothNegativeIndices) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[-4:-2];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[2]")));
+}
+
+TEST(TypecheckV2Test, SliceWithPositiveStartAndNoEnd) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[2:];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[4]")));
+}
+
+TEST(TypecheckV2Test, SliceWithNoStartAndPositiveEnd) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[:4];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[4]")));
+}
+
+TEST(TypecheckV2Test, SliceWithNegativeStartAndNoEnd) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[-3:];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[3]")));
+}
+
+TEST(TypecheckV2Test, SliceWithNoStartAndNegativeEnd) {
+  EXPECT_THAT(R"(
+const X = u6:0b100111;
+const Y = X[:-2];
+)",
+              TypecheckSucceeds(HasNodeWithType("Y", "uN[4]")));
+}
+
+TEST(TypecheckV2Test, SliceByConstants) {
+  EXPECT_THAT(R"(
+const X = s32:0;
+const Y = s32:2;
+const Z = 0b100111[X:Y];
+)",
+              TypecheckSucceeds(HasNodeWithType("Z", "uN[2]")));
+}
+
+TEST(TypecheckV2Test, SliceByParametrics) {
+  EXPECT_THAT(R"(
+fn f<A: s32, B: s32>(value: u32) -> uN[(B - A) as u32] { value[A:B] }
+const X = f<1, 3>(0b100111);
+const Y = f<1, 4>(0b100111);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[2]"),
+                                      HasNodeWithType("Y", "uN[3]"))));
+}
+
+TEST(TypecheckV2Test, SliceOfNonBitsFails) {
+  EXPECT_THAT(
+      "const X = [u32:1, 2, 3][0:2];",
+      TypecheckFails(HasSubstr("Value to slice is not of 'bits' type.")));
+}
+
+TEST(TypecheckV2Test, SliceOfSignedBitsFails) {
+  EXPECT_THAT("const X = (s6:0b011100)[0:4];",
+              TypecheckFails(HasSubstr("Bit slice LHS must be unsigned.")));
+}
+
+TEST(TypecheckV2Test, SliceBeforeStartFails) {
+  EXPECT_THAT("const X = (u6:0b011100)[-7:4];",
+              TypecheckFails(
+                  HasSubstr("Slice range out of bounds for array of size 6")));
+}
+
+TEST(TypecheckV2Test, SliceAfterEndFails) {
+  EXPECT_THAT("const X = (u6:0b011100)[0:7];",
+              TypecheckFails(
+                  HasSubstr("Slice range out of bounds for array of size 6")));
+}
+
+TEST(TypecheckV2Test, WidthSliceOfBits) {
+  EXPECT_THAT("const X = 0b100111[2+:u3];", TopNodeHasType("uN[3]"));
+}
+
+TEST(TypecheckV2Test, WidthSliceOfBitsWithNegativeStart) {
+  EXPECT_THAT("const X = 0b100111[-5+:u3];", TopNodeHasType("uN[3]"));
+}
+
+TEST(TypecheckV2Test, WidthSliceWithNonBitsWidthAnnotationFails) {
+  EXPECT_THAT("const X = 0b100111[0+:u2[2]];",
+              TypecheckFails(HasSubstr(
+                  "A bits type is required for a width-based slice")));
+}
+
+TEST(TypecheckV2Test, WidthSliceOfNonBitsFails) {
+  EXPECT_THAT(
+      "const X = [u32:1, u32:2, u32:3][0+:u32];",
+      TypecheckFails(HasSubstr("Value to slice is not of 'bits' type.")));
+}
+
+TEST(TypecheckV2Test, WidthSliceOfSignedBitsFails) {
+  EXPECT_THAT("const X = (s6:0b011100)[0+:u4];",
+              TypecheckFails(HasSubstr("Bit slice LHS must be unsigned.")));
+}
+
+TEST(TypecheckV2Test, WidthSliceBeforeStartFails) {
+  EXPECT_THAT("const X = (u6:0b011100)[-7+:u4];",
+              TypecheckFails(
+                  HasSubstr("Slice range out of bounds for array of size 6")));
+}
+
+TEST(TypecheckV2Test, WidthSliceAfterEndFails) {
+  EXPECT_THAT("const X = (u6:0b011100)[3+:u4];",
+              TypecheckFails(
+                  HasSubstr("Slice range out of bounds for array of size 6")));
+}
+
+TEST(TypecheckV2Test, WidthSliceByParametrics) {
+  EXPECT_THAT(R"(
+fn f<A: s32, B: u32>(value: u32) -> uN[B] { value[A+:uN[B]] }
+const X = f<2, 3>(0b100111);
+const Y = f<1, 4>(0b100111);
+)",
+              TypecheckSucceeds(AllOf(HasNodeWithType("X", "uN[3]"),
+                                      HasNodeWithType("Y", "uN[4]"))));
 }
 
 }  // namespace

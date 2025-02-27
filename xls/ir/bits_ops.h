@@ -27,6 +27,10 @@
 namespace xls {
 namespace bits_ops {
 
+// Returns the given bits as an int64_t, saturating to the maximum value if the
+// result would be too large to fit in an int64_t.
+int64_t UnsignedBitsToSaturatedInt64(const Bits& bits);
+
 // Various bitwise operations. The width of the lhs and rhs must be equal, and
 // the returned Bits object has the same width as the input.
 Bits And(const Bits& lhs, const Bits& rhs);
@@ -48,8 +52,8 @@ Bits XorReduce(const Bits& operand);
 
 // Various arithmetic operations. The width of all inputs must be equal, and the
 // returned Bits object is truncated to the same width as the input.
-Bits Increment(const Bits& x);
-Bits Decrement(const Bits& x);
+Bits Increment(Bits x);
+Bits Decrement(Bits x);
 Bits Add(const Bits& lhs, const Bits& rhs);
 Bits Sub(const Bits& lhs, const Bits& rhs);
 

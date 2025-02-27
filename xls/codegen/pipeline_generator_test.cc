@@ -79,7 +79,7 @@ absl::StatusOr<ModuleSignature> StripResetFromSignature(
   ModuleSignatureProto proto = signature.proto();
   proto.clear_reset();
   PortProto* reset_as_data_port = proto.add_data_ports();
-  reset_as_data_port->set_direction(DIRECTION_INPUT);
+  reset_as_data_port->set_direction(PORT_DIRECTION_INPUT);
   reset_as_data_port->set_name(signature.proto().reset().name());
   reset_as_data_port->set_width(1);
   return ModuleSignature::FromProto(proto);
@@ -1112,9 +1112,9 @@ TEST_P(PipelineGeneratorTest, ValidPipelineControlWithResetSimulation) {
 
 TEST_P(PipelineGeneratorTest, IIGreaterThanOne) {
   const std::string ir_text = absl::Substitute(R"(package $0
-chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid, metadata="")
-chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="")
-chan in_out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid, metadata="")
+chan in(bits[32], id=0, kind=streaming, ops=receive_only, flow_control=ready_valid)
+chan out(bits[32], id=1, kind=streaming, ops=send_only, flow_control=ready_valid)
+chan in_out(bits[32], id=2, kind=streaming, ops=send_only, flow_control=ready_valid)
 
 #[initiation_interval(2)]
 proc ii_greater_than_one(st: bits[32], init={0}) {

@@ -140,6 +140,27 @@ std::vector<std::pair<Node*, int64_t>> PredicateNodes(Predicates* p,
 
 bool IsHeavyOp(Op op) { return op == Op::kSend || op == Op::kReceive; }
 
+std::string_view GetChannelName(Node* node) {
+  if (node->Is<Send>()) {
+    return node->As<Send>()->channel_name();
+  }
+  if (node->Is<Receive>()) {
+    return node->As<Receive>()->channel_name();
+  }
+  return "";
+}
+
+std::optional<Node*> GetPredicate(Node* node) {
+  std::optional<Node*> predicate;
+  if (node->Is<Send>()) {
+    predicate = node->As<Send>()->predicate();
+  }
+  if (node->Is<Receive>()) {
+    predicate = node->As<Receive>()->predicate();
+  }
+  return predicate;
+};
+
 using NodeRelation = absl::flat_hash_map<Node*, absl::flat_hash_set<Node*>>;
 
 // Find all nodes that the given node transitively depends on.
@@ -193,6 +214,24 @@ absl::flat_hash_set<Node*> LargestConnectedSubgraph(
 // 2. Nodes of the same type that are unrelated in the transitive token
 //    dependency relation can be merged.
 absl::StatusOr<NodeRelation> ComputeMergableEffects(FunctionBase* f) {
+  absl::flat_hash_set<std::string> multi_op_channels;
+  absl::flat_hash_set<std::string> channel_names;
+  for (Node* node : f->nodes()) {
+    if (node->Is<Send>() || node->Is<Receive>()) {
+      std::string_view channel_name = GetChannelName(node);
+      if (auto it = channel_names.find(channel_name);
+          it == channel_names.end()) {
+        channel_names.insert(it, std::string(channel_name));
+      } else if (auto it = multi_op_channels.find(channel_name);
+                 it == multi_op_channels.end()) {
+        multi_op_channels.insert(it, std::string(channel_name));
+      }
+    }
+  }
+  if (multi_op_channels.empty()) {
+    return NodeRelation();
+  }
+
   XLS_ASSIGN_OR_RETURN(TokenDAG token_dag, ComputeTokenDAG(f));
   absl::flat_hash_set<Node*> token_nodes;
   for (const auto& [node, children] : token_dag) {
@@ -202,49 +241,31 @@ absl::StatusOr<NodeRelation> ComputeMergableEffects(FunctionBase* f) {
     }
   }
 
-  auto get_channel_name = [](Node* node) -> std::string_view {
-    if (node->Is<Receive>()) {
-      return node->As<Receive>()->channel_name();
-    }
-    if (node->Is<Send>()) {
-      return node->As<Send>()->channel_name();
-    }
-    return "";
-  };
-
-  auto get_predicate = [](Node* node) -> std::optional<Node*> {
-    std::optional<Node*> predicate;
-    if (node->Is<Send>()) {
-      predicate = node->As<Send>()->predicate();
-    }
-    if (node->Is<Receive>()) {
-      predicate = node->As<Receive>()->predicate();
-    }
-    return predicate;
-  };
-
   NodeRelation result;
   NodeRelation transitive_closure = TransitiveClosure<Node*>(token_dag);
   for (Node* node : ReverseTopoSort(f)) {
     if (node->Is<Send>() || node->Is<Receive>()) {
+      std::string_view channel_name = GetChannelName(node);
+      if (!multi_op_channels.contains(channel_name)) {
+        continue;
+      }
       absl::flat_hash_set<Node*> subgraph =
           LargestConnectedSubgraph(node, token_dag, [&](Node* n) -> bool {
-            return n->op() == node->op() &&
-                   get_channel_name(n) == get_channel_name(node);
+            return n->op() == node->op() && GetChannelName(n) == channel_name;
           });
       for (Node* x : subgraph) {
         for (Node* y : subgraph) {
           // Ensure that x and y are not data-dependent on each other (but they
           // can be token-dependent). The only way for two sends or two receives
           // to have a data dependency is through the predicate.
-          if (std::optional<Node*> pred_x = get_predicate(x)) {
+          if (std::optional<Node*> pred_x = GetPredicate(x)) {
             absl::flat_hash_set<Node*> dependencies_of_pred_x =
                 DependenciesOf(pred_x.value());
             if (dependencies_of_pred_x.contains(y)) {
               continue;
             }
           }
-          if (std::optional<Node*> pred_y = get_predicate(y)) {
+          if (std::optional<Node*> pred_y = GetPredicate(y)) {
             absl::flat_hash_set<Node*> dependencies_of_pred_y =
                 DependenciesOf(pred_y.value());
             if (dependencies_of_pred_y.contains(x)) {
@@ -277,6 +298,12 @@ absl::StatusOr<NodeRelation> ComputeMergableEffects(FunctionBase* f) {
 // A merge class is a set of nodes that are all jointly mutually exclusive.
 absl::StatusOr<std::vector<absl::flat_hash_set<Node*>>> ComputeMergeClasses(
     Predicates* p, FunctionBase* f, const ScheduleCycleMap& scm) {
+  XLS_ASSIGN_OR_RETURN(NodeRelation mergable_effects,
+                       ComputeMergableEffects(f));
+  if (mergable_effects.empty()) {
+    return std::vector<absl::flat_hash_set<Node*>>();
+  }
+
   absl::flat_hash_set<Node*> nodes;
   std::vector<Node*> ordered_nodes;
   absl::flat_hash_map<Node*, absl::flat_hash_set<Node*>> neighborhoods;
@@ -289,8 +316,6 @@ absl::StatusOr<std::vector<absl::flat_hash_set<Node*>>> ComputeMergeClasses(
     }
   }
 
-  XLS_ASSIGN_OR_RETURN(NodeRelation mergable_effects,
-                       ComputeMergableEffects(f));
   auto is_mergable = [&](Node* x, Node* y) -> bool {
     return mergable_effects.contains(x) && mergable_effects.at(x).contains(y) &&
            scm.at(x) == scm.at(y);
@@ -936,169 +961,6 @@ absl::StatusOr<Node*> AddPredicate(Predicates* p, Node* node, Node* pred) {
 
   p->SetPredicate(node, pred);
   return pred;
-}
-
-struct SelectorEquals {
-  Node* selector;
-  Bits value;
-
-  friend bool operator==(const SelectorEquals& lhs, const SelectorEquals& rhs) {
-    return lhs.selector->id() == rhs.selector->id() &&
-           bits_ops::UEqual(lhs.value, rhs.value);
-  }
-
-  friend bool operator<(const SelectorEquals& lhs, const SelectorEquals& rhs) {
-    return lhs.selector->id() < rhs.selector->id() ||
-           (lhs.selector->id() == rhs.selector->id() &&
-            bits_ops::ULessThan(lhs.value, rhs.value));
-  }
-};
-
-struct PredicateSet {
-  absl::btree_set<SelectorEquals> settings;
-
-  friend bool operator==(const PredicateSet& lhs, const PredicateSet& rhs) {
-    return lhs.settings == rhs.settings;
-  }
-
-  friend bool operator<(const PredicateSet& lhs, const PredicateSet& rhs) {
-    return lhs.settings < rhs.settings;
-  }
-};
-
-using NodeSet = absl::btree_set<Node*, Node::NodeIdLessThan>;
-template <typename T>
-using NodeMap = absl::btree_map<Node*, T, Node::NodeIdLessThan>;
-
-absl::Status AddSelectPredicates(Predicates* p, FunctionBase* f) {
-  XLS_ASSIGN_OR_RETURN(std::unique_ptr<PostDominatorAnalysis> pda,
-                       PostDominatorAnalysis::Run(f));
-
-  // In general, this function makes a lot of contortions to create something
-  // that does not need to have common subexpression elimination applied to it.
-  // This is because the CSE implementation needs to have a sophisticated
-  // understanding of predicates, and I couldn't get that to work.
-
-  // First, take each select and add to the `PredicateSet` of all nodes
-  // that are postdominated by one of its cases a predicate of the form
-  // `selector == case_number`.
-  NodeMap<PredicateSet> predicate_sets;
-  for (Node* node : TopoSort(f)) {
-    if (node->Is<Select>()) {
-      Select* select = node->As<Select>();
-      int64_t selector_bits =
-          select->selector()->GetType()->AsBitsOrDie()->bit_count();
-
-      int64_t index = 0;
-      for (Node* case_node : select->cases()) {
-        // If a case node has fanout, this analysis will get confused.
-        if (case_node->users().size() > 1) {
-          continue;
-        }
-
-        // The `users()` method returns a deduplicated set of nodes, so we need
-        // to check if this node has fanout by being used more than once under
-        // the same select.
-        if (select->OperandInstanceCount(case_node) != 1) {
-          continue;
-        }
-
-        // Finally, propagate a `selector == case_index` condition to all nodes
-        // dominated by this case node.
-        for (Node* dominated : pda->GetNodesPostDominatedByNode(case_node)) {
-          // TODO(taktoa): code post dominated by the default case should have
-          // the predicate `selector > select->cases().size()` added to it.
-          predicate_sets[dominated].settings.insert(
-              SelectorEquals{select->selector(), UBits(index, selector_bits)});
-        }
-        ++index;
-      }
-    }
-    // TODO(taktoa): handle one-hot and priority select
-  }
-
-  // Second, create a map from predicate set to nodes, which is intended to
-  // exploit the fact that two nodes may (and will often) have the same
-  // predicate set, so we only want to create nodes for that predicate set once.
-  absl::btree_map<PredicateSet, NodeSet> inverse_predicate_sets;
-  for (const auto& [node, predicate_set] : predicate_sets) {
-    inverse_predicate_sets[predicate_set].insert(node);
-  }
-
-  // Third, we want to exploit the fact that many predicate sets will contain
-  // the same predicates, so we create a map from abstract predicates to nodes,
-  // initially populating it with null pointers, and then synthesize each
-  // abstract predicate, replacing the null pointer with a concrete IR
-  // implementation of the abstract predicate.
-  absl::btree_map<SelectorEquals, Node*> settings_map;
-  for (const auto& [predicate_set, nodes] : inverse_predicate_sets) {
-    for (const SelectorEquals& setting : predicate_set.settings) {
-      settings_map[setting] = nullptr;
-    }
-  }
-  for (auto& [setting, predicate] : settings_map) {
-    XLS_ASSIGN_OR_RETURN(
-        Node * literal,
-        f->MakeNode<Literal>(SourceInfo(), Value(setting.value)));
-    XLS_ASSIGN_OR_RETURN(predicate,
-                         f->MakeNode<CompareOp>(SourceInfo(), setting.selector,
-                                                literal, Op::kEq));
-  }
-
-  // Create an ordering on `Bits` so they can be keys in an `absl::btree_map`.
-  struct BitsLT {
-    bool operator()(const Bits& lhs, const Bits& rhs) const {
-      return bits_ops::ULessThan(lhs, rhs);
-    }
-  };
-
-  // Fourth, we create a mapping from selector to the value of the selector
-  // to set of nodes that contain that selector-value pair, which will be used
-  // later in creating mutual exclusion edges.
-  NodeMap<absl::btree_map<Bits, NodeSet, BitsLT>> selector_to_value_to_preds;
-
-  // Fifth, we AND together all the select predicates that apply to a given node
-  // and then AND that with the current predicate of that node via the call to
-  // `AddPredicate`. Along the way, we populate `selector_to_value_to_preds`.
-  for (const auto& [predicate_set, nodes] : inverse_predicate_sets) {
-    std::vector<Node*> preds;
-    for (const SelectorEquals& setting : predicate_set.settings) {
-      preds.push_back(settings_map.at(setting));
-    }
-    XLS_ASSIGN_OR_RETURN(Node * predicates_anded,
-                         f->MakeNode<NaryOp>(SourceInfo(), preds, Op::kAnd));
-    for (Node* node : nodes) {
-      XLS_ASSIGN_OR_RETURN(Node * pred,
-                           AddPredicate(p, node, predicates_anded));
-      for (const SelectorEquals& setting : predicate_set.settings) {
-        selector_to_value_to_preds[setting.selector][setting.value].insert(
-            pred);
-      }
-    }
-  }
-
-  // Finally, we ensure that any pair of predicates that contains two abstract
-  // predicates on the same selector with different values are marked as
-  // mutually exclusive.
-  for (const auto& [selector, value_to_preds] : selector_to_value_to_preds) {
-    for (const auto& [valueA, predsA] : value_to_preds) {
-      for (const auto& [valueB, predsB] : value_to_preds) {
-        if (bits_ops::UEqual(valueA, valueB)) {
-          continue;
-        }
-        for (Node* predA : predsA) {
-          for (Node* predB : predsB) {
-            if (predA == predB) {
-              continue;
-            }
-            XLS_RETURN_IF_ERROR(p->MarkMutuallyExclusive(predA, predB));
-          }
-        }
-      }
-    }
-  }
-
-  return absl::OkStatus();
 }
 
 absl::Status ComputeMutualExclusion(Predicates* p, FunctionBase* f,

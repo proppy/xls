@@ -18,29 +18,41 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
+#include <typeindex>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xls/common/status/status_macros.h"
+#include "xls/common/visitor.h"
+#include "xls/ir/change_listener.h"
+#include "xls/ir/function.h"
 #include "xls/ir/function_base.h"
 #include "xls/ir/node.h"
 #include "xls/ir/package.h"
 #include "xls/ir/proc.h"
 #include "xls/ir/ram_rewrite.pb.h"
 #include "xls/ir/value.h"
+#include "xls/passes/forwarding_query_engine.h"
 #include "xls/passes/pass_base.h"
 #include "xls/passes/pass_pipeline.pb.h"
 #include "xls/passes/pass_registry.h"
 #include "xls/passes/pipeline_generator.h"
+#include "xls/passes/query_engine.h"
+#include "xls/passes/query_engine_helpers.h"
 
 namespace xls {
 
@@ -171,25 +183,147 @@ struct OptimizationPassOptions : public PassOptionsBase {
   bool optimize_for_best_case_throughput = false;
 };
 
+class OptimizationContext {
+ public:
+  template <typename QueryEngineT>
+  QueryEngineT* SharedQueryEngine(FunctionBase* f) {
+    absl::flat_hash_map<std::type_index, std::shared_ptr<QueryEngine>>&
+        f_query_engines = shared_query_engines_[f];
+    auto it = f_query_engines.find(typeid(QueryEngineT));
+    if (it == f_query_engines.end()) {
+      bool inserted = false;
+      std::tie(it, inserted) = f_query_engines.emplace(
+          typeid(QueryEngineT), std::make_unique<QueryEngineT>());
+      CHECK(inserted);
+      CHECK_OK(it->second->Populate(f).status());
+    }
+    return dynamic_cast<QueryEngineT*>(it->second.get());
+  }
+
+  std::vector<QueryEngine*> ListQueryEngines() {
+    std::vector<QueryEngine*> query_engines;
+    for (auto& [f, f_query_engines] : shared_query_engines_) {
+      query_engines.reserve(query_engines.size() + f_query_engines.size());
+      for (auto& [type_index, query_engine] : f_query_engines) {
+        query_engines.push_back(query_engine.get());
+      }
+    }
+    return query_engines;
+  }
+
+  void Abandon(FunctionBase* f) {
+    shared_query_engines_.erase(f);
+    reverse_topo_sort_.erase(f);
+  }
+
+  std::vector<Node*> ReverseTopoSort(FunctionBase* f);
+  std::vector<Node*> TopoSort(FunctionBase* f);
+
+ private:
+  const std::vector<Node*>& ReverseTopoSortReference(FunctionBase* f);
+
+  class InvalidatingVector : public ChangeListener {
+   public:
+    InvalidatingVector(FunctionBase* f, std::vector<Node*> value = {})
+        : f_(f), storage_(std::move(value)) {
+      f_->RegisterChangeListener(this);
+    }
+    ~InvalidatingVector() override { f_->UnregisterChangeListener(this); }
+
+    InvalidatingVector(const InvalidatingVector&) = delete;
+    InvalidatingVector& operator=(const InvalidatingVector&) = delete;
+
+    InvalidatingVector(InvalidatingVector&& other)
+        : f_(other.f_), storage_(std::move(other.storage_)) {
+      f_->RegisterChangeListener(this);
+    }
+    InvalidatingVector& operator=(InvalidatingVector&& other) {
+      if (f_ != nullptr) {
+        f_->UnregisterChangeListener(this);
+      }
+      f_ = other.f_;
+      storage_ = std::move(other.storage_);
+      if (f_ != nullptr) {
+        f_->RegisterChangeListener(this);
+      }
+      return *this;
+    }
+
+    std::vector<Node*>& operator*() { return storage_; }
+    const std::vector<Node*>& operator*() const { return storage_; }
+
+    std::vector<Node*>* operator->() { return &storage_; }
+    const std::vector<Node*>* operator->() const { return &storage_; }
+
+    void NodeAdded(Node*) override { storage_.clear(); }
+    void NodeDeleted(Node*) override { storage_.clear(); }
+    void OperandChanged(Node*, Node*, absl::Span<const int64_t>) override {
+      storage_.clear();
+    }
+    void OperandRemoved(Node*, Node*) override { storage_.clear(); }
+    void OperandAdded(Node*) override { storage_.clear(); }
+    void ReturnValueChanged(Function*, Node*) override { storage_.clear(); }
+    void NextStateElementChanged(Proc*, int64_t, Node*) override {
+      storage_.clear();
+    }
+
+   private:
+    FunctionBase* f_;
+    std::vector<Node*> storage_;
+  };
+  absl::flat_hash_map<FunctionBase*, InvalidatingVector> reverse_topo_sort_;
+
+  absl::flat_hash_map<
+      FunctionBase*,
+      absl::flat_hash_map<std::type_index, std::shared_ptr<QueryEngine>>>
+      shared_query_engines_;
+};
+
+// Construct a query engine that forwards to the shared implementation from
+// 'ctx' on 'f' if the context is not null and otherwise creates a new engine
+// using the given args.
+//
+// TODO(allight): It might be nice to put this in OptimizationContext and force
+// there to always be a value there.
+template <typename QueryEngineT, typename... Args>
+  requires(std::is_base_of_v<QueryEngine, QueryEngineT>)
+MaybeOwnedForwardingQueryEngine<QueryEngineT> GetSharedQueryEngine(
+    absl::Nullable<OptimizationContext*> ctx, absl::Nonnull<FunctionBase*> f,
+    Args... args) {
+  if (ctx == nullptr) {
+    // No context so construct a new engine.
+    return MaybeOwnedForwardingQueryEngine<QueryEngineT>(
+        QueryEngineT(std::forward<Args>(args)...));
+  }
+  return MaybeOwnedForwardingQueryEngine<QueryEngineT>(
+      ctx->SharedQueryEngine<QueryEngineT>(f));
+}
+
 // An object containing information about the invocation of a pass (single call
 // to PassBase::Run).
 // Defines the pass types for optimizations which operate strictly on XLS IR
 // (i.e., xls::Package).
-using OptimizationPass = PassBase<Package, OptimizationPassOptions>;
+using OptimizationPass = PassBase<Package, OptimizationPassOptions, PassResults,
+                                  OptimizationContext>;
 using OptimizationCompoundPass =
-    CompoundPassBase<Package, OptimizationPassOptions>;
+    CompoundPassBase<Package, OptimizationPassOptions, PassResults,
+                     OptimizationContext>;
 using OptimizationFixedPointCompoundPass =
-    FixedPointCompoundPassBase<Package, OptimizationPassOptions>;
+    FixedPointCompoundPassBase<Package, OptimizationPassOptions, PassResults,
+                               OptimizationContext>;
 using OptimizationInvariantChecker = OptimizationCompoundPass::InvariantChecker;
 using OptimizationPipelineGenerator =
-    PipelineGeneratorBase<Package, OptimizationPassOptions>;
+    PipelineGeneratorBase<Package, OptimizationPassOptions, PassResults,
+                          OptimizationContext>;
 using OptimizationWrapperPass =
-    WrapperPassBase<Package, OptimizationPassOptions>;
+    WrapperPassBase<Package, OptimizationPassOptions, PassResults,
+                    OptimizationContext>;
 
-using OptimizationPassRegistry =
-    PassRegistry<Package, OptimizationPassOptions, PassResults>;
+using OptimizationPassRegistry = PassRegistry<Package, OptimizationPassOptions,
+                                              PassResults, OptimizationContext>;
 using OptimizationPassGenerator =
-    PassGenerator<Package, OptimizationPassOptions, PassResults>;
+    PassGenerator<Package, OptimizationPassOptions, PassResults,
+                  OptimizationContext>;
 
 namespace internal {
 // Wrapper that uses templates to force opt-level to a specific max value for
@@ -216,15 +350,16 @@ class DynamicCapOptLevel : public OptimizationPass {
   }
 
  protected:
-  absl::StatusOr<bool> RunInternal(Package* ir,
-                                   const OptimizationPassOptions& options,
-                                   PassResults* results) const override {
+  absl::StatusOr<bool> RunInternal(
+      Package* ir, const OptimizationPassOptions& options, PassResults* results,
+      OptimizationContext* context) const override {
     if (VLOG_IS_ON(4) && level_ < options.opt_level) {
       VLOG(4) << "Lowering opt-level of pass '" << inner_.long_name() << "' ("
               << inner_.short_name() << ") to " << level_;
     }
-    return inner_.Run(
-        ir, options.WithOptLevel(std::min(level_, options.opt_level)), results);
+    return inner_.Run(ir,
+                      options.WithOptLevel(std::min(level_, options.opt_level)),
+                      results, context);
   }
 
  private:
@@ -255,9 +390,9 @@ class DynamicIfOptLevelAtLeast : public OptimizationPass {
   }
 
  protected:
-  absl::StatusOr<bool> RunInternal(Package* ir,
-                                   const OptimizationPassOptions& options,
-                                   PassResults* results) const override {
+  absl::StatusOr<bool> RunInternal(
+      Package* ir, const OptimizationPassOptions& options, PassResults* results,
+      OptimizationContext* context) const override {
     if (options.opt_level < level_) {
       VLOG(4) << "Skipping pass '" << inner_.long_name() << "' ("
               << inner_.short_name()
@@ -265,7 +400,7 @@ class DynamicIfOptLevelAtLeast : public OptimizationPass {
               << level_;
       return false;
     }
-    return inner_.Run(ir, options, results);
+    return inner_.Run(ir, options, results, context);
   }
 
  private:
@@ -310,10 +445,11 @@ class WithOptLevel : public InnerPass {
   }
 
  protected:
-  absl::StatusOr<bool> RunInternal(Package* ir,
-                                   const OptimizationPassOptions& options,
-                                   PassResults* results) const override {
-    return InnerPass::RunInternal(ir, options.WithOptLevel(kLevel), results);
+  absl::StatusOr<bool> RunInternal(
+      Package* ir, const OptimizationPassOptions& options, PassResults* results,
+      OptimizationContext* context) const override {
+    return InnerPass::RunInternal(ir, options.WithOptLevel(kLevel), results,
+                                  context);
   }
 };
 
@@ -341,18 +477,20 @@ class OptimizationFunctionBasePass : public OptimizationPass {
   // Runs the pass on a single function/proc.
   absl::StatusOr<bool> RunOnFunctionBase(FunctionBase* f,
                                          const OptimizationPassOptions& options,
-                                         PassResults* results) const;
+                                         PassResults* results,
+                                         OptimizationContext* context) const;
 
  protected:
   // Iterates over each function and proc in the package calling
   // RunOnFunctionBase.
   absl::StatusOr<bool> RunInternal(Package* p,
                                    const OptimizationPassOptions& options,
-                                   PassResults* results) const override;
+                                   PassResults* results,
+                                   OptimizationContext* context) const override;
 
   virtual absl::StatusOr<bool> RunOnFunctionBaseInternal(
       FunctionBase* f, const OptimizationPassOptions& options,
-      PassResults* results) const = 0;
+      PassResults* results, OptimizationContext* context) const = 0;
 
   // Calls the given function for every node in the graph in a loop until no
   // further simplifications are possible.  simplify_f should return true if the
@@ -376,17 +514,19 @@ class OptimizationProcPass : public OptimizationPass {
   // Proc the pass on a single proc.
   absl::StatusOr<bool> RunOnProc(Proc* proc,
                                  const OptimizationPassOptions& options,
-                                 PassResults* results) const;
+                                 PassResults* results,
+                                 OptimizationContext* context) const;
 
  protected:
   // Iterates over each proc in the package calling RunOnProc.
   absl::StatusOr<bool> RunInternal(Package* p,
                                    const OptimizationPassOptions& options,
-                                   PassResults* results) const override;
+                                   PassResults* results,
+                                   OptimizationContext* context) const override;
 
   virtual absl::StatusOr<bool> RunOnProcInternal(
-      Proc* proc, const OptimizationPassOptions& options,
-      PassResults* results) const = 0;
+      Proc* proc, const OptimizationPassOptions& options, PassResults* results,
+      OptimizationContext* context) const = 0;
 };
 
 }  // namespace xls

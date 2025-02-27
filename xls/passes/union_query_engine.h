@@ -15,11 +15,15 @@
 #ifndef XLS_PASSES_UNION_QUERY_ENGINE_H_
 #define XLS_PASSES_UNION_QUERY_ENGINE_H_
 
+#include <cstddef>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
@@ -109,21 +113,58 @@ class UnownedUnionQueryEngine : public QueryEngine {
 // will be fixed at some point.
 class UnionQueryEngine : public UnownedUnionQueryEngine {
  public:
-  explicit UnionQueryEngine(std::vector<std::unique_ptr<QueryEngine>> engines)
-      : UnownedUnionQueryEngine(ToUnownedVector(engines)),
+  // If any `unowned_engines` are provided, they must live at least as long as
+  // this query engine does.
+  explicit UnionQueryEngine(std::vector<std::unique_ptr<QueryEngine>> engines,
+                            std::vector<QueryEngine*> unowned_engines = {})
+      : UnownedUnionQueryEngine(ToUnownedVector(engines, unowned_engines)),
         owned_engines_(std::move(engines)) {}
+
+  // Helper to create a union-query-engine with a compile constant set of
+  // engines. All engines must be movable.
+  template <typename... Engines>
+  static UnionQueryEngine Of(Engines... e) {
+    std::vector<std::unique_ptr<QueryEngine>> vec =
+        MakeVec<sizeof...(Engines), Engines...>(std::forward<Engines>(e)...);
+    // Reverse the list so that the order of arguments is the same as the order
+    // in the list of unique_ptr<QueryEngine> we use to construct the actual
+    // UnionQueryEngine. NB Assuming well-behaved QEs this should never be
+    // semantically meaningful but it makes debugging easier.
+    absl::c_reverse(vec);
+    return UnionQueryEngine(std::move(vec));
+  }
 
  private:
   static std::vector<QueryEngine*> ToUnownedVector(
-      absl::Span<std::unique_ptr<QueryEngine> const> ptrs) {
+      absl::Span<std::unique_ptr<QueryEngine> const> ptrs,
+      absl::Span<QueryEngine* const> unowned_ptrs) {
     std::vector<QueryEngine*> result;
-    result.reserve(ptrs.size());
+    result.reserve(ptrs.size() + unowned_ptrs.size());
     for (const auto& ptr : ptrs) {
       result.push_back(ptr.get());
     }
+    absl::c_copy(unowned_ptrs, std::back_inserter(result));
     return result;
   }
   std::vector<std::unique_ptr<QueryEngine>> owned_engines_;
+
+  template <size_t kCnt, typename E>
+    requires(std::is_base_of_v<QueryEngine, E>)
+  static std::vector<std::unique_ptr<QueryEngine>> MakeVec(E e) {
+    std::vector<std::unique_ptr<QueryEngine>> res;
+    res.reserve(kCnt);
+    res.push_back(std::make_unique<E>(std::move(e)));
+    return res;
+  }
+
+  template <size_t kCnt, typename E, typename... Engines>
+    requires(std::is_base_of_v<QueryEngine, E>)
+  static std::vector<std::unique_ptr<QueryEngine>> MakeVec(E e, Engines... es) {
+    std::vector<std::unique_ptr<QueryEngine>> res =
+        MakeVec<kCnt, Engines...>(std::forward<Engines>(es)...);
+    res.emplace_back(std::make_unique<E>(std::move(e)));
+    return res;
+  }
 };
 
 }  // namespace xls

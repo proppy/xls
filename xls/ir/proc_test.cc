@@ -194,7 +194,6 @@ TEST_F(ProcTest, AddAndRemoveState) {
   EXPECT_EQ(proc->GetStateElement(2)->name(), "x");
   EXPECT_EQ(proc->GetStateElement(3)->name(), "baz");
   EXPECT_EQ(proc->GetStateElement(4)->name(), "bar");
-  EXPECT_THAT(proc->GetNextStateIndices(zero_literal), IsEmpty());
 
   EXPECT_THAT(proc->DumpIr(),
               HasSubstr("proc p(foo: bits[32], tkn: token, x: bits[32], baz: "
@@ -243,39 +242,6 @@ TEST_F(ProcTest, StatelessProc) {
   EXPECT_EQ(proc->GetStateFlatBitCount(), 0);
 
   EXPECT_EQ(proc->DumpIr(), "proc p() {\n}\n");
-}
-
-TEST_F(ProcTest, InvalidTokenType) {
-  auto p = CreatePackage();
-  ProcBuilder pb("p", p.get());
-  BValue tkn = pb.StateElement("tkn", Value::Token());
-  BValue state = pb.StateElement("st", Value(UBits(42, 32)));
-  BValue add = pb.Add(pb.Literal(UBits(1, 32)), state);
-  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, pb.Build({pb.AfterAll({tkn}), add}));
-
-  // Try setting invalid typed nodes as the next token/state.
-  EXPECT_THAT(
-      proc->SetNextStateElement(0, add.node()),
-      StatusIs(
-          absl::StatusCode::kInvalidArgument,
-          HasSubstr(
-              "type bits[32] does not match proc state element type token")));
-}
-
-TEST_F(ProcTest, InvalidStateType) {
-  auto p = CreatePackage();
-  ProcBuilder pb("p", p.get());
-  BValue tkn = pb.StateElement("tkn", Value::Token());
-  BValue state = pb.StateElement("st", Value(UBits(42, 32)));
-  BValue add = pb.Add(pb.Literal(UBits(1, 32)), state);
-  XLS_ASSERT_OK_AND_ASSIGN(Proc * proc, pb.Build({pb.AfterAll({tkn}), add}));
-
-  EXPECT_THAT(
-      proc->SetNextStateElement(1, tkn.node()),
-      StatusIs(
-          absl::StatusCode::kInvalidArgument,
-          HasSubstr(
-              "type token does not match proc state element type bits[32]")));
 }
 
 TEST_F(ProcTest, ReplaceStateThatStillHasUse) {
@@ -409,7 +375,7 @@ TEST_F(ProcTest, CloneNewStyle) {
   EXPECT_EQ(
       clone->DumpIr(),
       R"(proc cloned<foo: bits[32] in kind=streaming strictness=proven_mutually_exclusive, bar: bits[32] out kind=streaming strictness=proven_mutually_exclusive>(state: bits[32], init={42}) {
-  chan baz(bits[32], id=0, kind=streaming, ops=send_receive, flow_control=ready_valid, strictness=proven_mutually_exclusive, metadata="""""")
+  chan baz(bits[32], id=0, kind=streaming, ops=send_receive, flow_control=ready_valid, strictness=proven_mutually_exclusive)
   tkn: token = literal(value=token, id=14)
   receive_3: (token, bits[32]) = receive(tkn, channel=foo, id=15)
   tuple_index.16: token = tuple_index(receive_3, index=0, id=16)

@@ -850,7 +850,7 @@ absl::StatusOr<TypeRef*> Parser::ParseTypeRef(Bindings& bindings,
 }
 
 absl::StatusOr<TypeAnnotation*> Parser::ParseTypeAnnotation(
-    Bindings& bindings, std::optional<Token> first) {
+    Bindings& bindings, std::optional<Token> first, bool allow_generic_type) {
   XLS_ASSIGN_OR_RETURN(ExpressionDepthGuard expr_depth, BumpExpressionDepth());
 
   VLOG(5) << "ParseTypeAnnotation @ " << GetPos();
@@ -866,6 +866,9 @@ absl::StatusOr<TypeAnnotation*> Parser::ParseTypeAnnotation(
     if (tok.GetKeyword() == Keyword::kSelfType) {
       return module_->Make<SelfTypeAnnotation>(tok.span(),
                                                /*explicit_type=*/true);
+    }
+    if (allow_generic_type && tok.GetKeyword() == Keyword::kType) {
+      return module_->Make<GenericTypeAnnotation>(tok.span());
     }
     if (tok.GetKeyword() == Keyword::kChan) {
       XLS_RETURN_IF_ERROR(DropTokenOrError(TokenKind::kOAngle));
@@ -982,16 +985,10 @@ absl::StatusOr<NameRef*> Parser::ParseNameRef(Bindings& bindings,
         tok->span(), "Wildcard pattern `_` cannot be used as a reference");
   }
 
-  // If we failed to parse this ref, then put it back on the queue, in case
-  // we try another production.
   XLS_ASSIGN_OR_RETURN(
       BoundNode bn,
       bindings.ResolveNodeOrError(*tok->GetValue(), tok->span(), file_table()));
   AnyNameDef name_def = BoundNodeToAnyNameDef(bn);
-  if (std::holds_alternative<ConstantDef*>(bn)) {
-    return module_->Make<NameRef>(tok->span(), *tok->GetValue(), name_def);
-  }
-
   return module_->Make<NameRef>(tok->span(), *tok->GetValue(), name_def);
 }
 
@@ -3056,7 +3053,8 @@ absl::StatusOr<TypeRef*> Parser::ParseModTypeRef(Bindings& bindings,
   XLS_ASSIGN_OR_RETURN(
       BoundNode bn, bindings.ResolveNodeOrError(
                         *start_tok.GetValue(), start_tok.span(), file_table()));
-  if (!std::holds_alternative<Import*>(bn)) {
+  if (!std::holds_alternative<Import*>(bn) &&
+      !std::holds_alternative<UseTreeEntry*>(bn)) {
     return ParseErrorStatus(
         start_tok.span(),
         absl::StrFormat("Expected module for module-reference; got %s",
@@ -3551,7 +3549,8 @@ absl::StatusOr<std::vector<ParametricBinding*>> Parser::ParseParametricBindings(
     XLS_RETURN_IF_ERROR(
         DropTokenOrError(TokenKind::kColon, /*start=*/nullptr,
                          "Expect type annotation on parametric"));
-    XLS_ASSIGN_OR_RETURN(TypeAnnotation * type, ParseTypeAnnotation(bindings));
+    XLS_ASSIGN_OR_RETURN(TypeAnnotation * type,
+                         ParseTypeAnnotation(bindings, std::nullopt, true));
     XLS_ASSIGN_OR_RETURN(bool dropped_equals, TryDropToken(TokenKind::kEquals));
     Expr* expr = nullptr;
     if (dropped_equals) {

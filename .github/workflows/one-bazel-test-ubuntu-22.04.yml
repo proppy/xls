@@ -36,8 +36,8 @@ jobs:
           restore-keys: bazel-cache-nightly-${{ runner.os }}-
 
       - name: Install dependencies via apt
-        run: sudo apt-get install python3-distutils python3-dev python-is-python3 libtinfo5  build-essential liblapack-dev libblas-dev gfortran
+        run: sudo apt-get install python3-dev python-is-python3 libtinfo6 build-essential liblapack-dev libblas-dev gfortran
 
       - name: Bazel Test Target (opt)
         run: |
-          bazel test -c opt --test_output=all --runs_per_test=$BAZEL_RUNS_PER_TEST -- $BAZEL_TARGET
+          bazel test --config=ci -c opt --test_output=all --runs_per_test=$BAZEL_RUNS_PER_TEST -- $BAZEL_TARGET

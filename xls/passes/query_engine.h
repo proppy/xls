@@ -25,6 +25,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
@@ -113,6 +114,10 @@ class QueryEngine {
  public:
   virtual ~QueryEngine() = default;
 
+  // LINT.IfChanged - All virtual functions must be forwarded by
+  // ForwardingQueryEngine.
+
+  // Populate or prepare the query engine for calls to other functions.
   virtual absl::StatusOr<ReachedFixpoint> Populate(FunctionBase* f) = 0;
 
   // Returns whether any information is available for this node.
@@ -147,10 +152,6 @@ class QueryEngine {
   // Returns true if at least one of the given bits is true.
   virtual bool AtLeastOneTrue(absl::Span<TreeBitLocation const> bits) const = 0;
 
-  // Returns the location of the unknown bit within the node if exactly one of
-  // the given bits is unknown.
-  std::optional<TreeBitLocation> ExactlyOneBitUnknown(Node* node) const;
-
   // Returns true if 'a' implies 'b'.
   virtual bool Implies(const TreeBitLocation& a,
                        const TreeBitLocation& b) const = 0;
@@ -177,11 +178,6 @@ class QueryEngine {
   virtual bool KnownNotEquals(const TreeBitLocation& a,
                               const TreeBitLocation& b) const = 0;
 
-  // Returns true if at most/least one of the values in 'preds' is true. Each
-  // value in 'preds' must be a single-bit bits-typed value.
-  bool AtMostOneNodeTrue(absl::Span<Node* const> preds) const;
-  bool AtLeastOneNodeTrue(absl::Span<Node* const> preds) const;
-
   // Returns true if at most/at least/exactly one of the bits in 'node' is true.
   // 'node' must be bits-typed.
   virtual bool AtMostOneBitTrue(Node* node) const;
@@ -200,6 +196,32 @@ class QueryEngine {
   // known; otherwise returns std::nullopt.
   virtual std::optional<Value> KnownValue(Node* node) const;
 
+  // Returns whether every bit in the output of the given node is definitely
+  // zero (or one). Always returns false if the node includes a token.
+  virtual bool IsAllZeros(Node* node) const;
+  virtual bool IsAllOnes(Node* node) const;
+
+  // Returns true if every output bit of the given node is known (definitely
+  // zero or one).
+  virtual bool IsFullyKnown(Node* n) const;
+
+  // Returns the maximum unsigned value that the node can be.
+  virtual Bits MaxUnsignedValue(Node* node) const;
+
+  // Returns the minimum unsigned value that the node can be.
+  virtual Bits MinUnsignedValue(Node* node) const;
+
+  // LINT.ThenChange(//xls/passes/forwarding_query_engine.h)
+
+  // Returns the location of the unknown bit within the node if exactly one of
+  // the given bits is unknown.
+  std::optional<TreeBitLocation> ExactlyOneBitUnknown(Node* node) const;
+
+  // Returns true if at most/least one of the values in 'preds' is true. Each
+  // value in 'preds' must be a single-bit bits-typed value.
+  bool AtMostOneNodeTrue(absl::Span<Node* const> preds) const;
+  bool AtLeastOneNodeTrue(absl::Span<Node* const> preds) const;
+
   // Returns the output of the given node at the given index, if completely
   // known; otherwise returns std::nullopt. Precondition: 'node' must be
   // bits-typed.
@@ -217,27 +239,12 @@ class QueryEngine {
   bool IsOne(const TreeBitLocation& bit) const;
   bool IsZero(const TreeBitLocation& bit) const;
 
-  // Returns whether every bit in the output of the given node is definitely
-  // zero (or one). Always returns false if the node includes a token.
-  virtual bool IsAllZeros(Node* node) const;
-  virtual bool IsAllOnes(Node* node) const;
-
-  // Returns true if every output bit of the given node is known (definitely
-  // zero or one).
-  virtual bool IsFullyKnown(Node* n) const;
-
   // Returns whether *all* the bits are known for 'node' (which must be
   // bits-type).
   bool AllBitsKnown(Node* node) const {
     CHECK(node->GetType()->IsBits());
     return IsFullyKnown(node);
   }
-
-  // Returns the maximum unsigned value that the node can be.
-  virtual Bits MaxUnsignedValue(Node* node) const;
-
-  // Returns the minimum unsigned value that the node can be.
-  virtual Bits MinUnsignedValue(Node* node) const;
 
   // Returns true if the values of the two nodes are known to be equal when
   // interpreted as unsigned numbers. The nodes can be of different widths.
@@ -251,6 +258,8 @@ class QueryEngine {
   // Returns the known bits information of the given node as a string of ternary
   // symbols (0, 1, or X) with a '0b' prefix. For example: 0b1XX0.
   std::string ToString(Node* node) const;
+
+  virtual absl::Status CheckConsistency() const { return absl::OkStatus(); }
 };
 
 }  // namespace xls

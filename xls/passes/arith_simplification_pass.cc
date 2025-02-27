@@ -41,7 +41,6 @@
 #include "xls/ir/op.h"
 #include "xls/ir/source_location.h"
 #include "xls/ir/ternary.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/value.h"
 #include "xls/ir/value_utils.h"
 #include "xls/passes/optimization_pass.h"
@@ -1528,18 +1527,19 @@ absl::StatusOr<bool> MatchArithPatterns(int64_t opt_level, Node* n,
 
 absl::StatusOr<bool> ArithSimplificationPass::RunOnFunctionBaseInternal(
     FunctionBase* f, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   bool changed = false;
   bool pass_changed = false;
+  StatelessQueryEngine query_engine;
   do {
     pass_changed = false;
-    for (Node* n : ReverseTopoSort(f)) {
+    for (Node* n : context->ReverseTopoSort(f)) {
       if (n->IsDead()) {
         continue;
       }
       XLS_ASSIGN_OR_RETURN(
           bool node_changed,
-          MatchArithPatterns(options.opt_level, n, StatelessQueryEngine()));
+          MatchArithPatterns(options.opt_level, n, query_engine));
       if (node_changed) {
         pass_changed = true;
       }

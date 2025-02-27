@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xls/dslx/frontend/ast.h"
@@ -45,10 +46,25 @@ struct SignednessAndBitCountResult {
   std::variant<int64_t, const Expr*> bit_count;
 };
 
+// An `Expr`-ified rendition of the `StartAndWidth` struct used by `TypeInfo`.
+struct StartAndWidthExprs {
+  Expr* start;
+  Expr* width;
+};
+
 // Creates an annotation for `uN[bit_count]` or `sN[bit_count]` depending on the
 // value of `is_signed`.
 TypeAnnotation* CreateUnOrSnAnnotation(Module& module, const Span& span,
                                        bool is_signed, int64_t bit_count);
+
+// Variant that uses an `Expr` for the bit count.
+TypeAnnotation* CreateUnOrSnAnnotation(Module& module, const Span& span,
+                                       bool is_signed, Expr* bit_count);
+
+// Creates an annotation for an "element" of a `uN[N]` or `sN[N]` type, i.e.
+// just the `uN` or the `sN` piece with no dimension.
+TypeAnnotation* CreateUnOrSnElementAnnotation(Module& module, const Span& span,
+                                              bool is_signed);
 
 // Creates a `bool` type annotation.
 TypeAnnotation* CreateBoolAnnotation(Module& module, const Span& span);
@@ -60,6 +76,9 @@ TypeAnnotation* CreateBoolAnnotation(Module& module, const Span& span);
 // this, e.g. a type that we evaluate array dimensions and similar undecorated
 // values to.
 TypeAnnotation* CreateU32Annotation(Module& module, const Span& span);
+
+// Creates an `s32` type annotation.
+TypeAnnotation* CreateS32Annotation(Module& module, const Span& span);
 
 // Creates an annotation referring to the given struct definition with the given
 // parametric arguments.
@@ -100,7 +119,12 @@ const ArrayTypeAnnotation* CastToNonBitsArrayTypeAnnotation(
 
 // Resolves the definition and parametrics for the struct or proc type referred
 // to by `annotation`.
-std::optional<StructOrProcRef> GetStructOrProcRef(
+absl::StatusOr<std::optional<StructOrProcRef>> GetStructOrProcRef(
+    const TypeAnnotation* annotation, const FileTable& file_table);
+
+// Resolves the struct base definition for the struct or proc type referred to
+// by `annotation`.
+std::optional<const StructDefBase*> GetStructOrProcDef(
     const TypeAnnotation* annotation);
 
 // Verifies that all `bindings` either have a value in `actual_parametrics` or
@@ -118,6 +142,27 @@ absl::Status VerifyAllParametricsSatisfied(
 // parametric variables with values.
 CloneReplacer NameRefMapper(
     const absl::flat_hash_map<const NameDef*, ExprOrType>& map);
+
+// Creates an `Expr` representing `element_count<lhs>() +
+// element_count<rhs>()`.
+Expr* CreateElementCountSum(Module& module, TypeAnnotation* lhs,
+                            TypeAnnotation* rhs);
+
+// Converts a `Slice` or `WidthSlice` node into a `StartAndWidthExprs` struct.
+// The values given in the slice node are used verbatim when absolute, but when
+// an index in the slice is negative, which has the meaning `size - abs(index)`,
+// it is converted into `element_count<source_array_type>() + index`.
+absl::StatusOr<StartAndWidthExprs> CreateSliceStartAndWidthExprs(
+    Module& module, TypeAnnotation* source_array_type, const AstNode* slice);
+
+// Creates a literal representing 0 without a type annotation.
+Number* CreateUntypedZero(Module& module, const Span& span);
+
+// Removes any annotations in the given vector for which `accept_predicate`
+// returns false.
+void FilterAnnotations(
+    std::vector<const TypeAnnotation*>& annotations,
+    absl::FunctionRef<bool(const TypeAnnotation*)> accept_predicate);
 
 }  // namespace xls::dslx
 

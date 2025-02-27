@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -47,9 +46,9 @@
 #include "xls/ir/nodes.h"
 #include "xls/ir/op.h"
 #include "xls/ir/ternary.h"
-#include "xls/ir/topo_sort.h"
 #include "xls/ir/value.h"
 #include "xls/passes/dataflow_graph_analysis.h"
+#include "xls/passes/lazy_ternary_query_engine.h"
 #include "xls/passes/optimization_pass.h"
 #include "xls/passes/optimization_pass_registry.h"
 #include "xls/passes/pass_base.h"
@@ -357,16 +356,14 @@ absl::StatusOr<bool> SimplifyNode(
 
 absl::StatusOr<bool> LutConversionPass::RunOnFunctionBaseInternal(
     FunctionBase* func, const OptimizationPassOptions& options,
-    PassResults* results) const {
+    PassResults* results, OptimizationContext* context) const {
   if (!options.narrowing_enabled()) {
     return false;
   }
 
-  std::vector<std::unique_ptr<QueryEngine>> query_engines;
-  query_engines.push_back(std::make_unique<StatelessQueryEngine>());
-  query_engines.push_back(std::make_unique<TernaryQueryEngine>());
-
-  UnionQueryEngine query_engine(std::move(query_engines));
+  auto query_engine = UnionQueryEngine::Of(
+      StatelessQueryEngine(),
+      GetSharedQueryEngine<LazyTernaryQueryEngine>(context, func));
   XLS_RETURN_IF_ERROR(query_engine.Populate(func).status());
 
   std::optional<DataflowGraphAnalysis> dataflow_graph_analysis;
@@ -374,7 +371,7 @@ absl::StatusOr<bool> LutConversionPass::RunOnFunctionBaseInternal(
   bool changed = false;
   // By running in reverse topological order, the analyses will stay valid for
   // all nodes we're considering through the full pass.
-  for (Node* node : ReverseTopoSort(func)) {
+  for (Node* node : context->ReverseTopoSort(func)) {
     if (node->IsDead()) {
       continue;
     }

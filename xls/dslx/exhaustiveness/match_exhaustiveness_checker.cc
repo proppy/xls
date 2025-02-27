@@ -14,11 +14,26 @@
 
 #include "xls/dslx/exhaustiveness/match_exhaustiveness_checker.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <variant>
+#include <vector>
 
+#include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "absl/types/span.h"
+#include "absl/types/variant.h"
 #include "xls/common/visitor.h"
+#include "xls/dslx/exhaustiveness/interp_value_interval.h"
+#include "xls/dslx/exhaustiveness/nd_region.h"
+#include "xls/dslx/frontend/ast.h"
+#include "xls/dslx/frontend/pos.h"
 #include "xls/dslx/import_data.h"
+#include "xls/dslx/interp_value.h"
+#include "xls/dslx/type_system/type.h"
+#include "xls/dslx/type_system/type_info.h"
 
 namespace xls::dslx {
 namespace {
@@ -341,6 +356,7 @@ NdIntervalWithEmpty PatternToInterval(const NameDefTree& pattern,
   // Each leaf describes some range in its dimension that it matches on --
   // together, they describe an n-dimensional interval.
   std::vector<std::optional<InterpValueInterval>> intervals;
+  intervals.reserve(pattern_leaves.size());
   for (int64_t i = 0; i < pattern_leaves.size(); ++i) {
     intervals.push_back(PatternToIntervalInternal(
         pattern_leaves[i], *leaf_types[i], type_info, import_data));
