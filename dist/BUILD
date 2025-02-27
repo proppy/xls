@@ -28,6 +28,22 @@ package(
     licenses = ["notice"],  # Apache 2.0
 )
 
+constraint_setting(name = "glibc_version")
+
+constraint_value(
+    name = "glibc_2_35",
+    constraint_setting = ":glibc_version",
+)
+
+platform(
+    name = "colab_linux_x86",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        ":glibc_2_35",
+    ],
+)
+
 string_flag(
     name = "version",
     build_setting_default = "dev",
