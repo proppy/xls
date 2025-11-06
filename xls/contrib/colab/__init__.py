@@ -288,7 +288,7 @@ def load_schedule(codegen_outputs: XlsCodegenOutputs) -> pd.DataFrame:
   """Load schedule from proto."""
   # compute pipeline delays
   with codegen_outputs.top_schedule_proto.open('r') as f:
-    proto = pipeline_schedule_pb2.PackageSchedulesProto()
+    proto = pipeline_schedule_pb2.PackageScheduleProto()
     text_format.Parse(f.read(), proto)
 
   def pipeline_schedule_delays(proto):
