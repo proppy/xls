@@ -15,7 +15,6 @@
 import os
 import pathlib
 
-from xls.codegen import module_signature_pb2
 from xls.codegen import xls_metrics_pb2
 from xls.ir import op_pb2
 from xls.scheduling import pipeline_schedule_pb2
@@ -132,7 +131,7 @@ class XlsToolchainOutputs:
   top_block_ir: pathlib.Path
   top_v: pathlib.Path
   top_schedule_proto: pathlib.Path
-  top_signature_proto: pathlib.Path
+  top_metrics_proto: pathlib.Path
 
 @dataclasses.dataclass(frozen=True)
 class XlsToolchainMetrics:
@@ -218,7 +217,7 @@ def xls_ir_opt(
 class XlsCodegenOutputs:
   top_v: pathlib.Path
   top_schedule_proto: pathlib.Path
-  top_signature_proto: pathlib.Path
+  top_metrics_proto: pathlib.Path
   top_block_ir: pathlib.Path
 
 
@@ -234,7 +233,7 @@ def xls_codegen(
   if work_dir is None:
     work_dir = top_v.parent
   top_schedule_proto = work_dir / 'user_module_schedule.prototext'
-  top_signature_proto = work_dir / 'user_module_signature.prototext'
+  top_metrics_proto = work_dir / 'user_module_metrics.prototext'
   top_block_ir = work_dir / 'user_module_block.ir'
   codegen_args = [
       'delay_model',
@@ -263,7 +262,7 @@ def xls_codegen(
       '--module_name=user_module',
       f'--output_block_ir_path={top_block_ir}',
       f'--output_schedule_path={top_schedule_proto}',
-      f'--output_signature_path={top_signature_proto}',
+      f'--block_metrics_path={top_metrics_proto}',
       '--streaming_channel_data_suffix=_data',
       '--streaming_channel_valid_suffix=_valid',
       '--streaming_channel_ready_suffix=_ready',
@@ -280,7 +279,7 @@ def xls_codegen(
   return XlsCodegenOutputs(
       top_v=top_v,
       top_schedule_proto=top_schedule_proto,
-      top_signature_proto=top_signature_proto,
+      top_metrics_proto=top_metrics_proto,
       top_block_ir=top_block_ir,
   )
 
@@ -308,16 +307,16 @@ def load_schedule(codegen_outputs: XlsCodegenOutputs) -> pd.DataFrame:
 def load_parts_and_bom(
     codegen_outputs: XlsCodegenOutputs,
 ) -> (pd.DataFrame, pd.DataFrame):
-  """Load parts and BOM from module signature."""
-  with codegen_outputs.top_signature_proto.open('r') as f:
-    proto = module_signature_pb2.ModuleSignatureProto()
+  """Load parts and BOM from module metrics."""
+  with codegen_outputs.top_metrics_proto.open('r') as f:
+    proto = xls_metrics_pb2.XlsMetricsProto()
     text = f.read()
     text_format.Parse(text, proto)
 
-    def bom_parts(module_signature_proto):
-      for _ in range(proto.metrics.block_metrics.flop_count):
+    def bom_parts(module_metrics_proto):
+      for _ in range(proto.block_metrics.flop_count):
         yield 'FLOP', 'MISC', None, None
-      for p in module_signature_proto.metrics.block_metrics.bill_of_materials:
+      for p in module_metrics_proto.block_metrics.bill_of_materials:
         yield (
             op_pb2.OpProto.Name(p.op).replace('OP_', ''),
             xls_metrics_pb2.BomKindProto.Name(p.kind).replace('BOM_KIND_', ''),
@@ -411,7 +410,7 @@ def run_xls_toolchain(
           top_block_ir=codegen_outputs.top_block_ir,
           top_v=codegen_outputs.top_v,
           top_schedule_proto=codegen_outputs.top_schedule_proto,
-          top_signature_proto=codegen_outputs.top_signature_proto,
+          top_metrics_proto=codegen_outputs.top_metrics_proto,
       ),
       metrics=XlsToolchainMetrics(
           schedule=df_schedule,
