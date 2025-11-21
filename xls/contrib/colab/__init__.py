@@ -85,6 +85,7 @@ def register_dslx_magic():
 @magic_arguments.argument('--worst_case_throughput')
 @magic_arguments.argument('--generator')
 @magic_arguments.argument('--pdk')
+@magic_arguments.argument('--tab')
 def dslx(line: str, cell: str):
   """Run the content of the cell thru the XLS toolchain.
 
@@ -97,6 +98,7 @@ def dslx(line: str, cell: str):
       [--design_parameters=PARAM1:VALUE1,PARAM2:VALUE2]
   """
   toolchain_kwargs = parse_dslx_argstring(dslx, line)
+  tab = toolchain_kwargs.pop('tab', None)
   selected_pdk = toolchain_kwargs.pop('pdk', pdk)
   delay_model = selected_pdk
   tb = widgets.TabBar(
@@ -117,6 +119,9 @@ def dslx(line: str, cell: str):
         tb=tb,
         **toolchain_kwargs,
     )
+    if tab:
+      with tb.output_to(tab, select=True):
+        pass
   except XlsRuntimeError as e:
     display(e)
     pass  # don't re-raise exception to keep tabs readable
