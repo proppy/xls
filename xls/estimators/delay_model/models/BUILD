@@ -38,6 +38,8 @@ estimator_model_group(
     name = "oss_models",
     models = [
         ":model_asap7",
+        ":model_gf180mcu_3v3",
+        ":model_gf180mcu_5v0",
         ":model_sky130",
         ":model_unit",
     ],
@@ -65,6 +67,22 @@ delay_model(
     model_name = "asap7",
     precedence = "kMedium",
     precomputed_proto = "computed_estimators/asap7.textproto",
+)
+
+delay_model(
+    name = "model_gf180mcu_3v3",
+    srcs = ["gf180mcu_3v3.textproto"],
+    model_name = "gf180mcu_3v3",
+    precedence = "kMedium",
+    precomputed_proto = "computed_estimators/gf180mcu_3v3.textproto",
+)
+
+delay_model(
+    name = "model_gf180mcu_5v0",
+    srcs = ["gf180mcu_5v0.textproto"],
+    model_name = "gf180mcu_5v0",
+    precedence = "kMedium",
+    precomputed_proto = "computed_estimators/gf180mcu_5v0.textproto",
 )
 
 delay_model(

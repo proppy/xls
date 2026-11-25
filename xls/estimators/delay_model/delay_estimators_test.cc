@@ -14,6 +14,8 @@
 
 #include "xls/estimators/delay_model/delay_estimators.h"
 
+#include <cstdint>
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/status/status.h"
@@ -66,6 +68,36 @@ TEST_F(DelayEstimatorsTest, SyntheticDelayModelWithoutPrecomputedProto) {
   EXPECT_THAT(estimator->GetOperationDelayInPs(sub.node()), IsOkAndHolds(160));
   EXPECT_THAT(estimator->GetOperationDelayInPs(negate.node()),
               StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+TEST_F(DelayEstimatorsTest, Gf180McuDelayModels) {
+  XLS_ASSERT_OK_AND_ASSIGN(DelayEstimator * estimator_5v,
+                           GetDelayEstimator("gf180mcu_5v0"));
+  XLS_ASSERT_OK_AND_ASSIGN(DelayEstimator * estimator_3v3,
+                           GetDelayEstimator("gf180mcu_3v3"));
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue x = fb.Param("x", p->GetBitsType(32));
+  BValue y = fb.Param("y", p->GetBitsType(32));
+  BValue add = fb.Add(x, y);
+  BValue mul = fb.UMul(x, y);
+
+  EXPECT_THAT(estimator_5v->GetOperationDelayInPs(x.node()), IsOkAndHolds(0));
+  EXPECT_THAT(estimator_3v3->GetOperationDelayInPs(x.node()), IsOkAndHolds(0));
+
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t add_5v,
+                           estimator_5v->GetOperationDelayInPs(add.node()));
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t mul_5v,
+                           estimator_5v->GetOperationDelayInPs(mul.node()));
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t add_3v3,
+                           estimator_3v3->GetOperationDelayInPs(add.node()));
+  XLS_ASSERT_OK_AND_ASSIGN(int64_t mul_3v3,
+                           estimator_3v3->GetOperationDelayInPs(mul.node()));
+
+  EXPECT_GT(add_5v, 0);
+  EXPECT_GT(mul_5v, add_5v);
+  EXPECT_GT(add_3v3, add_5v);
+  EXPECT_GT(mul_3v3, mul_5v);
 }
 
 }  // namespace
