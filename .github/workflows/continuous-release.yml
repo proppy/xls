@@ -1,0 +1,153 @@
+# Continuous release workflow for personal forks (runs on standard GitHub-hosted
+# ubuntu-24.04 runners rather than Google's 64-core self-hosted runner).
+# Triggers on every push to `continuous-release` (or `main`), builds
+# //dist:xls_dist_tar, runs release & GF180MCU model smoke tests, and publishes
+# a GitHub Release tagged with `git describe --match=v*`.
+
+name: Continuous Release
+
+on:
+  push:
+    branches:
+      - main
+      - continuous-release
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Mark GitHub Release as prerelease'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: continuous-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and Release (Linux x64)
+    if: github.repository != 'google/xls'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Free disk space
+        run: |
+          # Standard GitHub-hosted runners start with ~14 GB free on /;
+          # removing unused toolchains frees ~25 GB needed for XLS + LLVM/Z3/OR-Tools.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required so `git describe --match=v*` resolves tags.
+
+      - name: Compute release version
+        run: |
+          VERSION=$(git describe --match=v*)
+          TAG_EXISTS="$(git tag -l "${VERSION}")"
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "TAG_EXISTS=${TAG_EXISTS}" >> "${GITHUB_ENV}"
+          echo "Release version: ${VERSION} (tag_exists='${TAG_EXISTS}')"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-dev \
+            python-is-python3 \
+            libtinfo6 \
+            build-essential \
+            liblapack-dev \
+            libblas-dev \
+            gfortran
+
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel
+          key: bazel-cache-release-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            bazel-cache-release-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Test delay and area estimator models
+        run: |
+          bazel test -c opt --local_ram_resources=12288 -- \
+            //xls/estimators/delay_model:delay_estimators_test \
+            //xls/estimators/delay_model/models:all \
+            //xls/estimators/area_model:area_estimators_test \
+            //xls/estimators/area_model/models:all
+
+      - name: Build release archive
+        run: |
+          bazel build -c opt \
+            --local_ram_resources=12288 \
+            --stamp \
+            --embed_label="${VERSION}" \
+            --//dist:version="${VERSION}" \
+            --//dist:os="${RUNNER_OS@L}" \
+            --//dist:arch="${RUNNER_ARCH@L}" \
+            -- //dist:xls_dist_tar
+
+      - name: Test release archive and tool versions
+        run: |
+          ARCHIVE="bazel-bin/dist/xls-${VERSION}-${RUNNER_OS@L}-${RUNNER_ARCH@L}.tar.gz"
+          tar -xzf "${ARCHIVE}"
+          cd "xls-${VERSION}-${RUNNER_OS@L}-${RUNNER_ARCH@L}/"
+          [[ -f LICENSE ]]
+          [[ -f THIRD_PARTY_NOTICES.txt ]]
+          for tool in \
+            interpreter_main \
+            ir_converter_main \
+            opt_main \
+            codegen_main \
+            proto_to_dslx_main \
+            dslx_fmt \
+            dslx_ls \
+            parse_and_typecheck_dslx_main \
+            prove_quickcheck_main \
+            check_ir_equivalence_main \
+            delay_info_main \
+            print_bom; do
+            TOOL_VERSION=$("./${tool}" --version)
+            echo "${tool}: ${TOOL_VERSION}"
+            [[ "${TOOL_VERSION}" == "${VERSION}" ]]
+          done
+
+      - name: Smoke test stdlib and GF180MCU models
+        run: |
+          cd "xls-${VERSION}-${RUNNER_OS@L}-${RUNNER_ARCH@L}/"
+          ./interpreter_main "${GITHUB_WORKSPACE}/xls/examples/sha256.x"
+          ./ir_converter_main --top=sha256 "${GITHUB_WORKSPACE}/xls/examples/sha256.x" > /tmp/sha256.ir
+          for model in gf180mcu_5v0 gf180mcu_3v3; do
+            ./opt_main --delay_model="${model}" --area_model="${model}" /tmp/sha256.ir > "/tmp/sha256_${model}.opt.ir"
+            ./delay_info_main --delay_model="${model}" "/tmp/sha256_${model}.opt.ir" | head -n 5
+          done
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: env.TAG_EXISTS == ''
+        with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.prerelease == true }}
+          generate_release_notes: true
+          files: bazel-bin/dist/xls-${{ env.VERSION }}-*.tar.gz
+
+      - name: Prune Bazel cache before saving
+        if: always()
+        run: |
+          rm -rf "$(bazel info repository_cache 2>/dev/null || true)"
+          rm -rf ~/.cache/bazel/_bazel*/*/external/*org_theopenroadproject_asap7*
+          rm -rf ~/.cache/bazel/_bazel*/*/external/*com_google_skywater_pdk*
+          rm -rf ~/.cache/bazel/_bazel*/*/external/*remotejdk*
+          rm -rf ~/.cache/bazel/_bazel*/*/execroot/*/bazel-out/*/bin/dist/
+          du -sh ~/.cache/bazel || true
+
+      - name: Save Bazel cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel
+          key: bazel-cache-release-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
