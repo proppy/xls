@@ -38,6 +38,8 @@ estimator_model_group(
     name = "oss_models",
     models = [
         ":area_model_asap7",
+        ":area_model_gf180mcu_3v3",
+        ":area_model_gf180mcu_5v0",
         ":area_model_sky130",
         ":area_model_unit",
         ":area_model_unit_with_default_recursive_op_handling",
@@ -57,6 +59,20 @@ area_model(
     srcs = ["asap7.textproto"],
     model_name = "asap7",
     precomputed_proto = "computed_estimators/asap7.textproto",
+)
+
+area_model(
+    name = "area_model_gf180mcu_3v3",
+    srcs = ["gf180mcu_3v3.textproto"],
+    model_name = "gf180mcu_3v3",
+    precomputed_proto = "computed_estimators/gf180mcu_3v3.textproto",
+)
+
+area_model(
+    name = "area_model_gf180mcu_5v0",
+    srcs = ["gf180mcu_5v0.textproto"],
+    model_name = "gf180mcu_5v0",
+    precomputed_proto = "computed_estimators/gf180mcu_5v0.textproto",
 )
 
 area_model(

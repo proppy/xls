@@ -29,6 +29,7 @@ namespace {
 using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::DoubleNear;
+using ::testing::Gt;
 
 class DelayEstimatorsTest : public IrTestBase {};
 
@@ -200,6 +201,38 @@ TEST_F(DelayEstimatorsTest, SyntheticAreaModelWithoutPrecomputedProto) {
               IsOkAndHolds(DoubleNear(160.0, 1e-3)));
   EXPECT_THAT(estimator->GetOperationAreaInSquareMicrons(negate.node()),
               StatusIs(absl::StatusCode::kUnimplemented));
+}
+
+TEST_F(DelayEstimatorsTest, Gf180McuAreaModels) {
+  auto p = CreatePackage();
+  FunctionBuilder fb(TestName(), p.get());
+  BValue x = fb.Param("x", p->GetBitsType(32));
+  BValue y = fb.Param("y", p->GetBitsType(32));
+  BValue not_op = fb.Not(x);
+  BValue add = fb.Add(x, y);
+  BValue mul = fb.UMul(x, y);
+
+  for (const char* model_name : {"gf180mcu_5v0", "gf180mcu_3v3"}) {
+    XLS_ASSERT_OK_AND_ASSIGN(AreaEstimator * estimator,
+                             GetAreaEstimator(model_name));
+    // gf180mcu_fd_sc_mcu7t5v0__dffq_1 area is 63.6608 um^2.
+    EXPECT_THAT(estimator->GetOneBitRegisterAreaInSquareMicrons(),
+                IsOkAndHolds(DoubleNear(63.6608, 1e-2)));
+    EXPECT_THAT(estimator->GetOperationAreaInSquareMicrons(x.node()),
+                IsOkAndHolds(0.0));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        double not_area,
+        estimator->GetOperationAreaInSquareMicrons(not_op.node()));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        double add_area,
+        estimator->GetOperationAreaInSquareMicrons(add.node()));
+    XLS_ASSERT_OK_AND_ASSIGN(
+        double mul_area,
+        estimator->GetOperationAreaInSquareMicrons(mul.node()));
+    EXPECT_THAT(not_area, Gt(0.0));
+    EXPECT_GT(add_area, not_area);
+    EXPECT_GT(mul_area, add_area);
+  }
 }
 
 }  // namespace
