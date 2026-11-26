@@ -540,6 +540,7 @@ op_models {
             source: OPERAND_BIT_COUNT
           }
         }
+        square: 9.858814796637624
       }
       terms {
         expression {
@@ -556,7 +557,6 @@ op_models {
           }
         }
         linear_log2: 17.092842852671097
-        linear: 9.858814796637622
       }
     }
   }

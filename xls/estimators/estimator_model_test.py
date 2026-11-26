@@ -1710,6 +1710,50 @@ class EstimatorModelTest(absltest.TestCase):
         estimator_model.compiled_protos_are_close(different_op, base)
     )
 
+  def test_area_regression_deduplicates_identical_columns(self):
+    # Like kSDiv/kUDiv, combining `x` and `x * x` yields identical basis
+    # columns (term[0].square == term[1].linear == x^2). Verify nnls places the
+    # weight deterministically on the earlier column (term[0].square).
+    model_text = """
+      metric: AREA_METRIC
+      op_models {
+        op: "kSDiv"
+        estimator {
+          area_regression {
+            expressions { factor { source: OPERAND_BIT_COUNT } }
+            expressions {
+              bin_op: MULTIPLY
+              lhs_expression { factor { source: OPERAND_BIT_COUNT } }
+              rhs_expression { factor { source: OPERAND_BIT_COUNT } }
+            }
+          }
+        }
+      }
+      data_points {
+        operation { op: "kSDiv" bit_count: 4 operands { bit_count: 4 } operands { bit_count: 4 } }
+        total_area: 160.0
+      }
+      data_points {
+        operation { op: "kSDiv" bit_count: 8 operands { bit_count: 8 } operands { bit_count: 8 } }
+        total_area: 640.0
+      }
+      data_points {
+        operation { op: "kSDiv" bit_count: 16 operands { bit_count: 16 } operands { bit_count: 16 } }
+        total_area: 2560.0
+      }
+      data_points {
+        operation { op: "kSDiv" bit_count: 32 operands { bit_count: 32 } operands { bit_count: 32 } }
+        total_area: 10240.0
+      }
+    """
+    em = estimator_model.EstimatorModel(
+        text_format.Parse(model_text, estimator_model_pb2.EstimatorModel())
+    )
+    compiled = em.op_models['kSDiv'].to_compiled_proto()
+    terms = compiled.estimator.area_regression.terms
+    self.assertAlmostEqual(terms[0].square, 10.0, places=6)
+    self.assertEqual(terms[1].linear, 0.0)
+
 
 if __name__ == '__main__':
   absltest.main()
