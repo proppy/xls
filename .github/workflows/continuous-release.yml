@@ -82,7 +82,7 @@ jobs:
 
       - name: Test delay and area estimator models
         run: |
-          bazel test -c opt --local_ram_resources=12288 -- \
+          bazel test -c opt --local_ram_resources=12288 --test_output=errors -- \
             //xls/estimators/delay_model:delay_estimators_test \
             //xls/estimators/delay_model/models:all \
             //xls/estimators/area_model:area_estimators_test \
