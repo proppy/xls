@@ -631,7 +631,17 @@ class AreaRegressionEstimator(RegressionEstimator):
     # exactly the set of parameters for our model! EXCEPT: we want to make sure
     # none of the weights are negative, since we expect all terms to have net
     # positive contribution. This helps make sure extrapolations are reasonable.
-    params = opt.nnls(xdata, ydata)[0]
+    # Drop exact duplicate columns (e.g. x^2 from `x` and linear `x*x` from
+    # `x*x` in kSDiv/kUDiv) before nnls so ties break deterministically across
+    # CPU/BLAS implementations.
+    keep_cols = []
+    for col_idx in range(xdata.shape[1]):
+      col = xdata[:, col_idx]
+      if not any(np.array_equal(col, xdata[:, prev]) for prev in keep_cols):
+        keep_cols.append(col_idx)
+    reduced_params = opt.nnls(xdata[:, keep_cols], ydata)[0]
+    params = np.zeros(xdata.shape[1], dtype=np.float64)
+    params[keep_cols] = reduced_params
 
     def f(x) -> float:
       x_augmented = get_x(np.array([x], dtype=np.float64))
