@@ -31,6 +31,15 @@ jobs:
     if: github.repository != 'google/xls'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    env:
+      # Clear pre-set Android SDK env vars so Bazel's rules_android does not
+      # try to inspect /usr/local/lib/android after disk cleanup.
+      ANDROID_HOME: ''
+      ANDROID_SDK_ROOT: ''
+      ANDROID_NDK: ''
+      ANDROID_NDK_HOME: ''
+      ANDROID_NDK_ROOT: ''
+      ANDROID_NDK_LATEST_HOME: ''
     steps:
       - name: Free disk space
         run: |
